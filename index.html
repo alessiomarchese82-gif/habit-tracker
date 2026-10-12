@@ -153,18 +153,65 @@ button.secondary { background: #333; }
 <div id="addFoodModal" class="section hidden">
   <div class="card">
     <h3>Aggiungi cibo - <span id="modalMeal"></span></h3>
-    <div class="search-box">
-      <input type="text" id="foodSearch" placeholder="Cerca alimento (es. pasta, yogurt, mela)..." oninput="searchFoods(this.value)">
-      <div id="searchResults" class="search-results"></div>
+    <div class="row">
+      <button type="button" class="secondary" id="modeBtnCerca" onclick="setFoodMode('cerca')">Cerca</button>
+      <button type="button" class="secondary" id="modeBtnScrivi" onclick="setFoodMode('scrivi')">Scrivi</button>
+      <button type="button" class="secondary" id="modeBtnEtichetta" onclick="setFoodMode('etichetta')">Etichetta</button>
+      <button type="button" class="secondary" id="modeBtnMiei" onclick="setFoodMode('miei')">I miei</button>
     </div>
-    <div id="selectedFood" class="hidden" style="margin-top:12px">
-      <div id="selectedName" style="font-weight:600"></div>
-      <div class="small" id="selectedPer100"></div>
-      <label class="small">Quantità (grammi)</label>
-      <input type="number" id="foodGrams" value="100" min="1">
-      <button class="primary" onclick="confirmAddFood()">Aggiungi al diario</button>
-      <button class="secondary" onclick="cancelAdd()">Annulla</button>
+
+    <div id="modeCerca">
+      <div class="search-box">
+        <input type="text" id="foodSearch" placeholder="Cerca alimento (es. pasta, yogurt, mela)..." oninput="searchFoods(this.value)">
+        <div id="searchResults" class="search-results"></div>
+      </div>
+      <div id="selectedFood" class="hidden" style="margin-top:12px">
+        <div id="selectedName" style="font-weight:600"></div>
+        <div class="small" id="selectedPer100"></div>
+        <label class="small">Quantità (grammi)</label>
+        <input type="number" id="foodGrams" value="100" min="1">
+        <button class="primary" onclick="confirmAddFood()">Aggiungi al diario</button>
+      </div>
     </div>
+
+    <div id="modeScrivi" class="hidden">
+      <p class="small">Scrivi cosa hai mangiato oggi, con la quantità.</p>
+      <label class="small">Cosa</label>
+      <input id="manualName" placeholder="es. pasta al pomodoro">
+      <label class="small">Quantità</label>
+      <input id="manualQty" placeholder="es. 180 g, 2 fette, 1 vasetto">
+      <label class="small">Calorie di questa quantità (opzionale)</label>
+      <input type="number" id="manualKcal" placeholder="kcal">
+      <button class="primary" onclick="addManualFood()">Aggiungi a questo giorno</button>
+    </div>
+
+    <div id="modeEtichetta" class="hidden">
+      <p class="small">Fotografa l'etichetta e salva i valori per 100 g. Resta solo su questo telefono.</p>
+      <label class="small">Foto etichetta</label>
+      <input type="file" id="labelPhoto" accept="image/*" capture="environment">
+      <img id="labelPreview" alt="" class="hidden" style="width:100%;border-radius:10px;margin-top:8px;max-height:220px;object-fit:cover">
+      <label class="small">Nome</label>
+      <input id="customName" placeholder="es. Yogurt greco">
+      <div class="small" style="margin-top:8px">Valori per 100 g</div>
+      <div class="row">
+        <div><label class="small">kcal</label><input type="number" id="customKcal"></div>
+        <div><label class="small">Prot g</label><input type="number" id="customProt" step="0.1"></div>
+      </div>
+      <div class="row">
+        <div><label class="small">Carb g</label><input type="number" id="customCarb" step="0.1"></div>
+        <div><label class="small">Grassi g</label><input type="number" id="customFat" step="0.1"></div>
+      </div>
+      <label class="small">Grammi mangiati ora (vuoto = solo salva)</label>
+      <input type="number" id="customGrams" placeholder="es. 150">
+      <button class="primary" onclick="saveCustomFood(true)">Salva e aggiungi a oggi</button>
+      <button class="secondary" onclick="saveCustomFood(false)">Solo nel mio database</button>
+    </div>
+
+    <div id="modeMiei" class="hidden">
+      <input id="myFoodFilter" placeholder="Filtra i tuoi cibi" oninput="renderMyFoods()">
+      <div id="myFoodList" class="search-results"></div>
+    </div>
+
     <button class="secondary" onclick="cancelAdd()" style="margin-top:12px">Chiudi</button>
   </div>
 </div>
@@ -212,13 +259,13 @@ button.secondary { background: #333; }
     <label class="small">Importa</label>
     <input type="file" id="importFile" accept=".json" onchange="importData(this)">
     <button class="secondary" style="background:var(--danger)" onclick="clearAll()">Cancella tutto</button>
-    <p class="small">Dati solo sul dispositivo. Aggiornamenti dell’app arrivano ricaricando la pagina.</p>
+    <p class="small">Diario e cibi tuoi restano solo su questo telefono. Le foto etichetta non entrano nel backup JSON.</p>
   </div>
 </div>
 
 <script>
 const STORAGE_KEY = 'habitTracker_v2';
-let data = { profile: {}, foods: [], exercises: [], sleeps: [], weights: [], waters: [] };
+let data = { profile: {}, foods: [], exercises: [], sleeps: [], weights: [], waters: [], customFoods: [] };
 let currentDate = new Date().toISOString().slice(0,10);
 let selectedProduct = null;
 let currentMeal = 'colazione';
@@ -226,7 +273,7 @@ let currentMeal = 'colazione';
 function load() {
   const s = localStorage.getItem(STORAGE_KEY);
   if (s) data = JSON.parse(s);
-  ['foods','exercises','sleeps','weights','waters'].forEach(k => { if (!data[k]) data[k] = []; });
+  ['foods','exercises','sleeps','weights','waters','customFoods'].forEach(k => { if (!data[k]) data[k] = []; });
   if (!data.profile) data.profile = {};
   renderAll();
   updateDateDisplay();
@@ -272,38 +319,80 @@ function openAddFood(meal) {
   document.getElementById('searchResults').innerHTML = '';
   document.getElementById('selectedFood').classList.add('hidden');
   selectedProduct = null;
+  setFoodMode('cerca');
 }
 function cancelAdd() {
   document.getElementById('addFoodModal').classList.add('hidden');
   document.getElementById('diario').classList.remove('hidden');
 }
 
+function setFoodMode(mode) {
+  ['cerca','scrivi','etichetta','miei'].forEach(m => {
+    document.getElementById('mode' + m.charAt(0).toUpperCase() + m.slice(1)).classList.toggle('hidden', m !== mode);
+    const btn = document.getElementById('modeBtn' + m.charAt(0).toUpperCase() + m.slice(1));
+    btn.classList.toggle('primary', m === mode);
+    btn.classList.toggle('secondary', m !== mode);
+  });
+  if (mode === 'miei') renderMyFoods();
+}
+
 let searchHits = [];
 
 async function searchFoods(q) {
-  if (q.length < 2) { document.getElementById('searchResults').innerHTML = ''; return; }
-  try {
-    const url = `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=12&fields=code,product_name,brands,nutriments`;
-    const res = await fetch(url);
-    const json = await res.json();
-    searchHits = (json.products || []).filter(p => p.product_name && p.nutriments && p.nutriments['energy-kcal_100g']);
-    const div = document.getElementById('searchResults');
-    div.innerHTML = searchHits.map((p, i) => `
-      <div class="search-item" data-i="${i}">
-        <div class="name">${escapeHtml(p.product_name || 'Senza nome')}</div>
-        <div class="meta">${escapeHtml(p.brands || '')} • ${Math.round(p.nutriments['energy-kcal_100g'] || 0)} kcal/100g</div>
-      </div>
-    `).join('') || '<div class="search-item small">Nessun risultato</div>';
-    div.querySelectorAll('.search-item[data-i]').forEach(el => {
-      el.addEventListener('click', () => selectFood(searchHits[+el.dataset.i]));
-    });
-  } catch (e) {
-    document.getElementById('searchResults').innerHTML = '<div class="search-item small">Errore ricerca (controlla connessione)</div>';
+  const div = document.getElementById('searchResults');
+  const mine = (data.customFoods || []).filter(f => !q || f.name.toLowerCase().includes(q.toLowerCase())).slice(0, 8);
+  if (q.length < 2 && !mine.length) { div.innerHTML = ''; return; }
+  let html = mine.map(f => `
+    <div class="search-item" data-custom="${f.id}">
+      <div class="name">${escapeHtml(f.name)}</div>
+      <div class="meta">Tuo • ${Math.round(f.kcal100 || 0)} kcal/100g</div>
+    </div>
+  `).join('');
+  if (q.length >= 2) {
+    try {
+      const url = `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=12&fields=code,product_name,brands,nutriments`;
+      const res = await fetch(url);
+      const json = await res.json();
+      searchHits = (json.products || []).filter(p => p.product_name && p.nutriments && p.nutriments['energy-kcal_100g']);
+      html += searchHits.map((p, i) => `
+        <div class="search-item" data-i="${i}">
+          <div class="name">${escapeHtml(p.product_name || 'Senza nome')}</div>
+          <div class="meta">${escapeHtml(p.brands || '')} • ${Math.round(p.nutriments['energy-kcal_100g'] || 0)} kcal/100g</div>
+        </div>
+      `).join('');
+    } catch (e) {
+      html += '<div class="search-item small">Errore ricerca (controlla connessione)</div>';
+    }
   }
+  div.innerHTML = html || '<div class="search-item small">Nessun risultato</div>';
+  div.querySelectorAll('[data-i]').forEach(el => {
+    el.addEventListener('click', () => selectFood(searchHits[+el.dataset.i]));
+  });
+  div.querySelectorAll('[data-custom]').forEach(el => {
+    el.addEventListener('click', () => {
+      const item = data.customFoods.find(f => String(f.id) === el.dataset.custom);
+      if (item) selectCustomFood(item);
+    });
+  });
 }
 
 function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({'&':'&','<':'<','>':'>','"':'"',"'":'&#39;'}[c]));
+  const d = document.createElement('div');
+  d.textContent = String(s ?? '');
+  return d.innerHTML;
+}
+
+function selectCustomFood(item) {
+  selectFood({
+    product_name: item.name,
+    brands: 'Mio',
+    nutriments: {
+      'energy-kcal_100g': item.kcal100 || 0,
+      proteins_100g: item.prot100 || 0,
+      carbohydrates_100g: item.carb100 || 0,
+      fat_100g: item.fat100 || 0
+    }
+  });
 }
 
 function selectFood(p) {
@@ -336,6 +425,193 @@ function confirmAddFood() {
   data.foods.push(item);
   save();
   cancelAdd();
+}
+
+function addManualFood() {
+  const name = document.getElementById('manualName').value.trim();
+  const qty = document.getElementById('manualQty').value.trim();
+  const kcal = +document.getElementById('manualKcal').value || 0;
+  if (!name) return alert('Scrivi cosa hai mangiato');
+  data.foods.push({
+    id: Date.now(),
+    date: currentDate,
+    meal: currentMeal,
+    name,
+    qtyText: qty,
+    grams: 0,
+    kcal,
+    prot: 0,
+    carb: 0,
+    fat: 0
+  });
+  document.getElementById('manualName').value = '';
+  document.getElementById('manualQty').value = '';
+  document.getElementById('manualKcal').value = '';
+  save();
+  cancelAdd();
+}
+
+function photoDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('habitPhotos_v1', 1);
+    req.onupgradeneeded = () => {
+      if (!req.result.objectStoreNames.contains('photos')) req.result.createObjectStore('photos');
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+function idbPut(key, val) {
+  return photoDB().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction('photos', 'readwrite');
+    tx.objectStore('photos').put(val, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  }));
+}
+function idbGet(key) {
+  return photoDB().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction('photos', 'readonly');
+    const req = tx.objectStore('photos').get(key);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  }));
+}
+function idbDel(key) {
+  return photoDB().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction('photos', 'readwrite');
+    tx.objectStore('photos').delete(key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  }));
+}
+function idbClear() {
+  return photoDB().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction('photos', 'readwrite');
+    tx.objectStore('photos').clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  }));
+}
+function compressImage(file) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const max = 1200;
+      let w = img.width, h = img.height;
+      const scale = Math.min(1, max / Math.max(w, h));
+      w = Math.round(w * scale);
+      h = Math.round(h * scale);
+      const c = document.createElement('canvas');
+      c.width = w;
+      c.height = h;
+      c.getContext('2d').drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      c.toBlob(b => resolve(b || file), 'image/jpeg', 0.72);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+    img.src = url;
+  });
+}
+
+document.getElementById('labelPhoto').addEventListener('change', () => {
+  const file = document.getElementById('labelPhoto').files[0];
+  const img = document.getElementById('labelPreview');
+  if (!file) { img.classList.add('hidden'); return; }
+  img.src = URL.createObjectURL(file);
+  img.classList.remove('hidden');
+});
+
+async function saveCustomFood(addToday) {
+  const name = document.getElementById('customName').value.trim();
+  if (!name) return alert('Inserisci il nome');
+  const kcal100 = +document.getElementById('customKcal').value || 0;
+  const prot100 = +document.getElementById('customProt').value || 0;
+  const carb100 = +document.getElementById('customCarb').value || 0;
+  const fat100 = +document.getElementById('customFat').value || 0;
+  const grams = +document.getElementById('customGrams').value || 0;
+  const file = document.getElementById('labelPhoto').files[0];
+  const id = Date.now();
+  let photoId = null;
+  if (file) {
+    photoId = 'p' + id;
+    await idbPut(photoId, await compressImage(file));
+  }
+  data.customFoods.push({ id, name, kcal100, prot100, carb100, fat100, photoId });
+  if (addToday && grams) {
+    const factor = grams / 100;
+    data.foods.push({
+      id: id + 1,
+      date: currentDate,
+      meal: currentMeal,
+      name,
+      brand: 'Mio',
+      grams,
+      kcal: Math.round(kcal100 * factor),
+      prot: Math.round(prot100 * factor * 10) / 10,
+      carb: Math.round(carb100 * factor * 10) / 10,
+      fat: Math.round(fat100 * factor * 10) / 10
+    });
+    save();
+    cancelAdd();
+    return;
+  }
+  save();
+  alert(addToday ? 'Salvato. Inserisci i grammi per metterlo anche nel giorno.' : 'Salvato nei tuoi cibi');
+  setFoodMode('miei');
+}
+
+async function renderMyFoods() {
+  const q = (document.getElementById('myFoodFilter').value || '').toLowerCase();
+  const list = (data.customFoods || []).filter(f => !q || f.name.toLowerCase().includes(q));
+  const div = document.getElementById('myFoodList');
+  div.innerHTML = '';
+  if (!list.length) {
+    div.innerHTML = '<div class="search-item small">Nessun cibo. Usa Etichetta per crearne uno.</div>';
+    return;
+  }
+  for (const f of list) {
+    const el = document.createElement('div');
+    el.className = 'search-item';
+    const name = document.createElement('div');
+    name.className = 'name';
+    name.textContent = f.name;
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = Math.round(f.kcal100 || 0) + ' kcal/100g';
+    if (f.photoId) {
+      const img = document.createElement('img');
+      img.alt = '';
+      img.style.cssText = 'width:54px;height:54px;object-fit:cover;border-radius:8px;float:right';
+      try {
+        const blob = await idbGet(f.photoId);
+        if (blob) img.src = URL.createObjectURL(blob);
+      } catch (e) {}
+      el.appendChild(img);
+    }
+    el.appendChild(name);
+    el.appendChild(meta);
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'secondary';
+    del.textContent = 'Elimina';
+    del.style.cssText = 'width:auto;padding:6px 10px;margin-top:6px';
+    del.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      data.customFoods = data.customFoods.filter(x => x.id !== f.id);
+      if (f.photoId) { try { await idbDel(f.photoId); } catch (err) {} }
+      save();
+      renderMyFoods();
+    });
+    el.addEventListener('click', (e) => {
+      if (e.target === del) return;
+      selectCustomFood(f);
+      setFoodMode('cerca');
+    });
+    el.appendChild(del);
+    div.appendChild(el);
+  }
 }
 
 function addExercise() {
@@ -400,7 +676,7 @@ function renderDiario() {
     document.getElementById('tot' + m.slice(0,3).replace('col','Col').replace('pra','Pra').replace('cen','Cen').replace('spu','Spu')).textContent = t + ' kcal';
     document.getElementById('list' + m.slice(0,3).replace('col','Col').replace('pra','Pra').replace('cen','Cen').replace('spu','Spu')).innerHTML = list.map(f => `
       <div class="entry">
-        <div class="info">${f.name} <span class="small">${f.grams}g</span></div>
+        <div class="info">${escapeHtml(f.name)} <span class="small">${escapeHtml(f.qtyText || (f.grams ? f.grams + 'g' : ''))}</span></div>
         <span class="kcal">${f.kcal}</span>
         <button onclick="deleteEntry('foods',${f.id})">×</button>
       </div>
@@ -568,7 +844,10 @@ function importData(input) {
   reader.readAsText(file);
 }
 function clearAll() {
-  if (confirm('Cancellare tutti i dati?')) { localStorage.removeItem(STORAGE_KEY); location.reload(); }
+  if (confirm('Cancellare tutti i dati?')) {
+    localStorage.removeItem(STORAGE_KEY);
+    idbClear().finally(() => location.reload());
+  }
 }
 
 load();
