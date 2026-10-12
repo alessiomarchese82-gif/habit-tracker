@@ -58,7 +58,9 @@ button.secondary { background: #333; }
 .bottom-nav button { width: auto; background: transparent; border: none; color: #888; font-size: 11px; padding: 4px; }
 .bottom-nav button.active { color: var(--accent); }
 .advice { background: #1a3a2a; padding: 12px; border-radius: 10px; margin: 8px 0; font-size: 14px; }
-.small { font-size: 12px; color: var(--muted); }
+.mode-switch { display: flex; flex-wrap: wrap; gap: 8px; }
+.mode-switch button { width: auto; flex: 1 1 40%; margin-top: 0; }
+.ing { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid #2a2a2a; font-size: 14px; }
 </style>
 </head>
 <body>
@@ -77,6 +79,7 @@ button.secondary { background: #333; }
 
 <div class="tabs" id="mainTabs">
   <button class="active" data-tab="diario">Diario</button>
+  <button data-tab="database">Database</button>
   <button data-tab="grafici">Grafici</button>
   <button data-tab="profilo">Profilo</button>
   <button data-tab="consigli">Consigli</button>
@@ -160,10 +163,10 @@ button.secondary { background: #333; }
 <div id="addFoodModal" class="section hidden">
   <div class="card">
     <h3>Aggiungi cibo - <span id="modalMeal"></span></h3>
-    <div class="row">
+    <div class="mode-switch">
       <button type="button" class="secondary" id="modeBtnCerca" onclick="setFoodMode('cerca')">Cerca</button>
       <button type="button" class="secondary" id="modeBtnScrivi" onclick="setFoodMode('scrivi')">Scrivi</button>
-      <button type="button" class="secondary" id="modeBtnEtichetta" onclick="setFoodMode('etichetta')">Etichetta</button>
+      <button type="button" class="secondary" id="modeBtnPiatti" onclick="setFoodMode('piatti')">Piatti</button>
       <button type="button" class="secondary" id="modeBtnMiei" onclick="setFoodMode('miei')">I miei</button>
     </div>
 
@@ -219,7 +222,78 @@ button.secondary { background: #333; }
       <div id="myFoodList" class="search-results"></div>
     </div>
 
+    <div id="modePiatti" class="hidden">
+      <p class="small">Scegli un piatto già salvato nel Database. 1 porzione = ricetta così com'è.</p>
+      <label class="small">Porzioni</label>
+      <input type="number" id="dishPortions" value="1" min="0.1" step="0.5">
+      <div id="logDishList" class="search-results"></div>
+    </div>
+
     <button class="secondary" onclick="cancelAdd()" style="margin-top:12px">Chiudi</button>
+  </div>
+</div>
+
+<div id="database" class="section hidden">
+  <div class="mode-switch">
+    <button type="button" class="primary" id="dbTabCibi" onclick="setDbTab('cibi')">Cibi</button>
+    <button type="button" class="secondary" id="dbTabPiatti" onclick="setDbTab('piatti')">Piatti</button>
+  </div>
+  <div id="dbCibi">
+    <div class="card">
+      <h3>Nuovo cibo</h3>
+      <p class="small">Lo prepari qui, senza legarlo a un giorno. Poi lo usi nel diario o in un piatto.</p>
+      <label class="small">Foto etichetta</label>
+      <input type="file" id="dbPhoto" accept="image/*" capture="environment">
+      <img id="dbPreview" alt="" class="hidden" style="width:100%;border-radius:10px;margin-top:8px;max-height:180px;object-fit:cover">
+      <label class="small">Nome</label>
+      <input id="dbName" placeholder="es. Riso, carote, ragù">
+      <div class="small" style="margin-top:8px">Valori per 100 g</div>
+      <div class="row">
+        <div><label class="small">kcal</label><input type="number" id="dbKcal"></div>
+        <div><label class="small">Prot g</label><input type="number" id="dbProt" step="0.1"></div>
+      </div>
+      <div class="row">
+        <div><label class="small">Carb g</label><input type="number" id="dbCarb" step="0.1"></div>
+        <div><label class="small">Grassi g</label><input type="number" id="dbFat" step="0.1"></div>
+      </div>
+      <button class="primary" onclick="saveDbFood()">Salva nel database</button>
+    </div>
+    <div class="card">
+      <h3>Cibi salvati</h3>
+      <div id="dbFoodList"></div>
+    </div>
+  </div>
+  <div id="dbPiatti" class="hidden">
+    <div class="card">
+      <h3>Nuovo piatto</h3>
+      <p class="small">Esempio: riso 80 g + carote 60 g + zucchine 70 g. I grammi sono quelli di una porzione.</p>
+      <label class="small">Nome piatto</label>
+      <input id="dishName" placeholder="es. Pasta al ragù">
+      <label class="small">Ingrediente</label>
+      <select id="ingFood" onchange="toggleIngFree()"></select>
+      <div id="ingFree" class="hidden">
+        <label class="small">Nome</label>
+        <input id="ingName" placeholder="es. Ragù">
+        <div class="row">
+          <div><label class="small">kcal/100g</label><input type="number" id="ingKcal"></div>
+          <div><label class="small">Prot</label><input type="number" id="ingProt" step="0.1"></div>
+        </div>
+        <div class="row">
+          <div><label class="small">Carb</label><input type="number" id="ingCarb" step="0.1"></div>
+          <div><label class="small">Grassi</label><input type="number" id="ingFat" step="0.1"></div>
+        </div>
+      </div>
+      <label class="small">Grammi in questo piatto</label>
+      <input type="number" id="ingGrams" placeholder="es. 80">
+      <button class="secondary" type="button" onclick="addDishIngredient()">Aggiungi ingrediente</button>
+      <div id="dishDraftList"></div>
+      <p class="small" id="dishDraftTotal"></p>
+      <button class="primary" type="button" onclick="saveDish()">Salva piatto</button>
+    </div>
+    <div class="card">
+      <h3>Piatti salvati</h3>
+      <div id="dbDishList"></div>
+    </div>
   </div>
 </div>
 
@@ -272,7 +346,7 @@ button.secondary { background: #333; }
 
 <script>
 const STORAGE_KEY = 'habitTracker_v2';
-let data = { profile: {}, foods: [], exercises: [], sleeps: [], weights: [], waters: [], customFoods: [] };
+let data = { profile: {}, foods: [], exercises: [], sleeps: [], weights: [], waters: [], customFoods: [], dishes: [] };
 let currentDate = localToday();
 let selectedProduct = null;
 let currentMeal = 'colazione';
@@ -280,7 +354,7 @@ let currentMeal = 'colazione';
 function load() {
   const s = localStorage.getItem(STORAGE_KEY);
   if (s) data = JSON.parse(s);
-  ['foods','exercises','sleeps','weights','waters','customFoods'].forEach(k => { if (!data[k]) data[k] = []; });
+  ['foods','exercises','sleeps','weights','waters','customFoods','dishes'].forEach(k => { if (!data[k]) data[k] = []; });
   if (!data.profile) data.profile = {};
   renderAll();
   updateDateDisplay();
@@ -348,13 +422,14 @@ function cancelAdd() {
 }
 
 function setFoodMode(mode) {
-  ['cerca','scrivi','etichetta','miei'].forEach(m => {
+  ['cerca','scrivi','piatti','miei'].forEach(m => {
     document.getElementById('mode' + m.charAt(0).toUpperCase() + m.slice(1)).classList.toggle('hidden', m !== mode);
     const btn = document.getElementById('modeBtn' + m.charAt(0).toUpperCase() + m.slice(1));
     btn.classList.toggle('primary', m === mode);
     btn.classList.toggle('secondary', m !== mode);
   });
   if (mode === 'miei') renderMyFoods();
+  if (mode === 'piatti') renderLogDishes();
 }
 
 let searchHits = [];
@@ -543,6 +618,13 @@ document.getElementById('labelPhoto').addEventListener('change', () => {
   img.src = URL.createObjectURL(file);
   img.classList.remove('hidden');
 });
+document.getElementById('dbPhoto').addEventListener('change', () => {
+  const file = document.getElementById('dbPhoto').files[0];
+  const img = document.getElementById('dbPreview');
+  if (!file) { img.classList.add('hidden'); return; }
+  img.src = URL.createObjectURL(file);
+  img.classList.remove('hidden');
+});
 
 async function saveCustomFood(addToday) {
   const name = document.getElementById('customName').value.trim();
@@ -589,7 +671,7 @@ async function renderMyFoods() {
   const div = document.getElementById('myFoodList');
   div.innerHTML = '';
   if (!list.length) {
-    div.innerHTML = '<div class="search-item small">Nessun cibo. Usa Etichetta per crearne uno.</div>';
+    div.innerHTML = '<div class="search-item small">Nessun cibo. Creali nel tab Database.</div>';
     return;
   }
   for (const f of list) {
@@ -633,6 +715,259 @@ async function renderMyFoods() {
     el.appendChild(del);
     div.appendChild(el);
   }
+}
+
+let dishDraft = [];
+
+function setDbTab(tab) {
+  document.getElementById('dbCibi').classList.toggle('hidden', tab !== 'cibi');
+  document.getElementById('dbPiatti').classList.toggle('hidden', tab !== 'piatti');
+  document.getElementById('dbTabCibi').classList.toggle('primary', tab === 'cibi');
+  document.getElementById('dbTabCibi').classList.toggle('secondary', tab !== 'cibi');
+  document.getElementById('dbTabPiatti').classList.toggle('primary', tab === 'piatti');
+  document.getElementById('dbTabPiatti').classList.toggle('secondary', tab !== 'piatti');
+  if (tab === 'piatti') fillIngSelect();
+}
+
+async function saveDbFood() {
+  const name = document.getElementById('dbName').value.trim();
+  if (!name) return alert('Inserisci il nome');
+  const id = Date.now();
+  let photoId = null;
+  const file = document.getElementById('dbPhoto').files[0];
+  if (file) {
+    photoId = 'p' + id;
+    await idbPut(photoId, await compressImage(file));
+  }
+  data.customFoods.push({
+    id,
+    name,
+    kcal100: +document.getElementById('dbKcal').value || 0,
+    prot100: +document.getElementById('dbProt').value || 0,
+    carb100: +document.getElementById('dbCarb').value || 0,
+    fat100: +document.getElementById('dbFat').value || 0,
+    photoId
+  });
+  ['dbName','dbKcal','dbProt','dbCarb','dbFat'].forEach(k => { document.getElementById(k).value = ''; });
+  document.getElementById('dbPhoto').value = '';
+  document.getElementById('dbPreview').classList.add('hidden');
+  save();
+  renderDatabase();
+}
+
+function dishTotals(ingredients) {
+  return ingredients.reduce((s, i) => {
+    const f = (i.grams || 0) / 100;
+    s.grams += i.grams || 0;
+    s.kcal += (i.kcal100 || 0) * f;
+    s.prot += (i.prot100 || 0) * f;
+    s.carb += (i.carb100 || 0) * f;
+    s.fat += (i.fat100 || 0) * f;
+    return s;
+  }, { grams: 0, kcal: 0, prot: 0, carb: 0, fat: 0 });
+}
+
+function fillIngSelect() {
+  const sel = document.getElementById('ingFood');
+  const current = sel.value;
+  sel.innerHTML = '';
+  const first = document.createElement('option');
+  first.value = '';
+  first.textContent = 'Scegli un cibo salvato';
+  const free = document.createElement('option');
+  free.value = 'free';
+  free.textContent = 'Scrivi a mano';
+  sel.append(first, free);
+  (data.customFoods || []).forEach(f => {
+    const o = document.createElement('option');
+    o.value = String(f.id);
+    o.textContent = f.name;
+    sel.appendChild(o);
+  });
+  if ([...sel.options].some(o => o.value === current)) sel.value = current;
+  toggleIngFree();
+}
+
+function toggleIngFree() {
+  document.getElementById('ingFree').classList.toggle('hidden', document.getElementById('ingFood').value !== 'free');
+}
+
+function addDishIngredient() {
+  const grams = +document.getElementById('ingGrams').value;
+  if (!grams) return alert('Metti i grammi');
+  const sel = document.getElementById('ingFood').value;
+  let ing;
+  if (sel && sel !== 'free') {
+    const food = data.customFoods.find(f => String(f.id) === sel);
+    if (!food) return alert('Cibo non trovato. Salvalo prima nei Cibi.');
+    ing = { name: food.name, foodId: food.id, grams, kcal100: food.kcal100 || 0, prot100: food.prot100 || 0, carb100: food.carb100 || 0, fat100: food.fat100 || 0 };
+  } else {
+    const name = document.getElementById('ingName').value.trim();
+    if (!name) return alert('Nome ingrediente, oppure scegline uno salvato');
+    ing = {
+      name,
+      grams,
+      kcal100: +document.getElementById('ingKcal').value || 0,
+      prot100: +document.getElementById('ingProt').value || 0,
+      carb100: +document.getElementById('ingCarb').value || 0,
+      fat100: +document.getElementById('ingFat').value || 0
+    };
+  }
+  dishDraft.push(ing);
+  document.getElementById('ingGrams').value = '';
+  renderDishDraft();
+}
+
+function renderDishDraft() {
+  const div = document.getElementById('dishDraftList');
+  div.innerHTML = '';
+  dishDraft.forEach((ing, i) => {
+    const row = document.createElement('div');
+    row.className = 'entry';
+    const info = document.createElement('div');
+    info.className = 'info';
+    info.textContent = ing.name + ' · ' + ing.grams + ' g';
+    const k = document.createElement('span');
+    k.className = 'kcal';
+    k.textContent = Math.round((ing.kcal100 || 0) * ing.grams / 100);
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.textContent = '×';
+    del.onclick = () => { dishDraft.splice(i, 1); renderDishDraft(); };
+    row.append(info, k, del);
+    div.appendChild(row);
+  });
+  const t = dishTotals(dishDraft);
+  document.getElementById('dishDraftTotal').textContent = dishDraft.length
+    ? ('Totale 1 porzione: ' + Math.round(t.kcal) + ' kcal, ' + Math.round(t.grams) + ' g')
+    : '';
+}
+
+function saveDish() {
+  const name = document.getElementById('dishName').value.trim();
+  if (!name) return alert('Nome del piatto');
+  if (!dishDraft.length) return alert('Aggiungi almeno un ingrediente');
+  const t = dishTotals(dishDraft);
+  data.dishes.push({
+    id: Date.now(),
+    name,
+    ingredients: dishDraft.map(i => Object.assign({}, i)),
+    grams: Math.round(t.grams),
+    kcal: Math.round(t.kcal),
+    prot: Math.round(t.prot * 10) / 10,
+    carb: Math.round(t.carb * 10) / 10,
+    fat: Math.round(t.fat * 10) / 10
+  });
+  dishDraft = [];
+  document.getElementById('dishName').value = '';
+  renderDishDraft();
+  save();
+  renderDatabase();
+}
+
+function renderDatabase() {
+  const foodDiv = document.getElementById('dbFoodList');
+  foodDiv.innerHTML = '';
+  if (!data.customFoods.length) {
+    const empty = document.createElement('p');
+    empty.className = 'small';
+    empty.textContent = 'Nessun cibo';
+    foodDiv.appendChild(empty);
+  }
+  data.customFoods.forEach(f => {
+    const row = document.createElement('div');
+    row.className = 'entry';
+    const info = document.createElement('div');
+    info.className = 'info';
+    info.textContent = f.name;
+    const meta = document.createElement('span');
+    meta.className = 'kcal';
+    meta.textContent = Math.round(f.kcal100 || 0) + '/100g';
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.textContent = '×';
+    del.onclick = async () => {
+      data.customFoods = data.customFoods.filter(x => x.id !== f.id);
+      if (f.photoId) { try { await idbDel(f.photoId); } catch (e) {} }
+      save();
+      renderDatabase();
+    };
+    row.append(info, meta, del);
+    foodDiv.appendChild(row);
+  });
+  const dishDiv = document.getElementById('dbDishList');
+  dishDiv.innerHTML = '';
+  if (!data.dishes.length) {
+    const empty = document.createElement('p');
+    empty.className = 'small';
+    empty.textContent = 'Nessun piatto';
+    dishDiv.appendChild(empty);
+  }
+  data.dishes.forEach(d => {
+    const row = document.createElement('div');
+    row.className = 'entry';
+    const info = document.createElement('div');
+    info.className = 'info';
+    const title = document.createElement('div');
+    title.textContent = d.name + ' · ' + d.kcal + ' kcal';
+    const meta = document.createElement('div');
+    meta.className = 'small';
+    meta.textContent = (d.ingredients || []).map(i => i.name + ' ' + i.grams + 'g').join(', ');
+    info.append(title, meta);
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.textContent = '×';
+    del.onclick = () => {
+      data.dishes = data.dishes.filter(x => x.id !== d.id);
+      save();
+      renderDatabase();
+    };
+    row.append(info, del);
+    dishDiv.appendChild(row);
+  });
+}
+
+function renderLogDishes() {
+  const div = document.getElementById('logDishList');
+  div.innerHTML = '';
+  if (!data.dishes.length) {
+    div.innerHTML = '<div class="search-item small">Nessun piatto. Creali nel tab Database.</div>';
+    return;
+  }
+  data.dishes.forEach(d => {
+    const el = document.createElement('div');
+    el.className = 'search-item';
+    const name = document.createElement('div');
+    name.className = 'name';
+    name.textContent = d.name;
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = d.kcal + ' kcal · ' + d.grams + ' g a porzione';
+    el.append(name, meta);
+    el.addEventListener('click', () => addDishToDay(d.id));
+    div.appendChild(el);
+  });
+}
+
+function addDishToDay(id) {
+  const d = data.dishes.find(x => x.id === id);
+  if (!d) return;
+  const portions = +document.getElementById('dishPortions').value || 1;
+  data.foods.push({
+    id: Date.now(),
+    date: currentDate,
+    meal: currentMeal,
+    name: d.name,
+    qtyText: (portions === 1 ? '1 porzione' : portions + ' porzioni'),
+    grams: Math.round((d.grams || 0) * portions),
+    kcal: Math.round((d.kcal || 0) * portions),
+    prot: Math.round((d.prot || 0) * portions * 10) / 10,
+    carb: Math.round((d.carb || 0) * portions * 10) / 10,
+    fat: Math.round((d.fat || 0) * portions * 10) / 10,
+    dishId: d.id
+  });
+  save();
+  cancelAdd();
 }
 
 function addExercise() {
@@ -840,6 +1175,7 @@ function showTab(tab) {
   if (tab !== 'addFoodModal') document.getElementById(tab).classList.remove('hidden');
   document.querySelectorAll('#mainTabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   if (tab === 'grafici') setTimeout(renderCharts, 100);
+  if (tab === 'database') renderDatabase();
   if (tab === 'diario') cancelAdd();
 }
 
