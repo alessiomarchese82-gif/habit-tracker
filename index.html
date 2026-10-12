@@ -7,6 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Habit Tracker</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
 :root {
   --bg: #111; --card: #1e1e1e; --text: #f5f5f5; --muted: #999;
@@ -199,6 +200,7 @@ button.secondary { background: #333; }
       <p class="small">Fotografa l'etichetta e salva i valori per 100 g. Resta solo su questo telefono.</p>
       <label class="small">Foto etichetta</label>
       <input type="file" id="labelPhoto" accept="image/*" capture="environment">
+      <p class="small" id="labelOcr">Foto etichetta: i campi si compilano da soli. Controllali.</p>
       <img id="labelPreview" alt="" class="hidden" style="width:100%;border-radius:10px;margin-top:8px;max-height:220px;object-fit:cover">
       <label class="small">Nome</label>
       <input id="customName" placeholder="es. Yogurt greco">
@@ -244,6 +246,7 @@ button.secondary { background: #333; }
       <p class="small">Lo prepari qui, senza legarlo a un giorno. Poi lo usi nel diario o in un piatto.</p>
       <label class="small">Foto etichetta</label>
       <input type="file" id="dbPhoto" accept="image/*" capture="environment">
+      <p class="small" id="dbOcr">Foto etichetta: i campi si compilano da soli. Controllali.</p>
       <img id="dbPreview" alt="" class="hidden" style="width:100%;border-radius:10px;margin-top:8px;max-height:180px;object-fit:cover">
       <label class="small">Nome</label>
       <input id="dbName" placeholder="es. Riso, carote, ragù">
@@ -611,12 +614,57 @@ function compressImage(file) {
   });
 }
 
+let ocrWorker = null;
+function parseNutrition(text) {
+  const t = String(text || '').replace(/\u00a0/g, ' ');
+  const num = s => parseFloat(String(s).replace(',', '.'));
+  const out = {};
+  const kcal = t.match(/(\d+[.,]?\d*)\s*kcal/i);
+  if (kcal) out.kcal = Math.round(num(kcal[1]));
+  else {
+    const kj = t.match(/(\d+[.,]?\d*)\s*kj/i);
+    if (kj) out.kcal = Math.round(num(kj[1]) / 4.184);
+  }
+  const grab = re => {
+    const m = t.match(re);
+    return m ? Math.round(num(m[1]) * 10) / 10 : null;
+  };
+  out.prot = grab(/proteine?\s*[:\-]?\s*(\d+[.,]?\d*)/i);
+  out.carb = grab(/carboidrati\s*[:\-]?\s*(\d+[.,]?\d*)/i);
+  out.fat = grab(/grassi\s*[:\-]?\s*(\d+[.,]?\d*)/i);
+  return out;
+}
+async function fillFromLabel(file, ids) {
+  const status = document.getElementById(ids.status);
+  if (!file || !window.Tesseract) {
+    if (status) status.textContent = 'Lettura non disponibile. Inserisci i valori a mano.';
+    return;
+  }
+  status.textContent = 'Leggo l\'etichetta...';
+  try {
+    if (!ocrWorker) ocrWorker = await Tesseract.createWorker('ita');
+    const blob = await compressImage(file);
+    const res = await ocrWorker.recognize(blob);
+    const parsed = parseNutrition(res.data && res.data.text);
+    let n = 0;
+    if (parsed.kcal != null) { document.getElementById(ids.kcal).value = parsed.kcal; n++; }
+    if (parsed.prot != null) { document.getElementById(ids.prot).value = parsed.prot; n++; }
+    if (parsed.carb != null) { document.getElementById(ids.carb).value = parsed.carb; n++; }
+    if (parsed.fat != null) { document.getElementById(ids.fat).value = parsed.fat; n++; }
+    status.textContent = n
+      ? 'Valori letti. Controlla prima di salvare.'
+      : 'Non ho letto i numeri. Avvicina la tabella nutrizionale e riprova, oppure compilali a mano.';
+  } catch (e) {
+    status.textContent = 'Lettura non riuscita. Compila i campi a mano.';
+  }
+}
 document.getElementById('labelPhoto').addEventListener('change', () => {
   const file = document.getElementById('labelPhoto').files[0];
   const img = document.getElementById('labelPreview');
   if (!file) { img.classList.add('hidden'); return; }
   img.src = URL.createObjectURL(file);
   img.classList.remove('hidden');
+  fillFromLabel(file, { status: 'labelOcr', kcal: 'customKcal', prot: 'customProt', carb: 'customCarb', fat: 'customFat' });
 });
 document.getElementById('dbPhoto').addEventListener('change', () => {
   const file = document.getElementById('dbPhoto').files[0];
@@ -624,6 +672,7 @@ document.getElementById('dbPhoto').addEventListener('change', () => {
   if (!file) { img.classList.add('hidden'); return; }
   img.src = URL.createObjectURL(file);
   img.classList.remove('hidden');
+  fillFromLabel(file, { status: 'dbOcr', kcal: 'dbKcal', prot: 'dbProt', carb: 'dbCarb', fat: 'dbFat' });
 });
 
 async function saveCustomFood(addToday) {
