@@ -203,7 +203,7 @@ button.secondary { background: #333; }
       <label class="small">Foto etichetta</label>
       <input type="file" id="labelPhoto" accept="image/*" capture="environment">
       <p class="small" id="labelOcr">Foto anche storta o in ombra: i campi si compilano da soli. Può richiedere mezzo minuto. Controllali.</p>
-      <img id="labelPreview" alt="" class="hidden" style="width:100%;border-radius:10px;margin-top:8px;max-height:220px;object-fit:cover">
+      <img id="labelPreview" alt="" class="hidden" style="width:100%;border-radius:10px;margin-top:8px;max-height:520px;object-fit:contain;background:#111">
       <label class="small">Nome</label>
       <input id="customName" placeholder="es. Yogurt greco">
       <div class="small" style="margin-top:8px">Valori per 100 g</div>
@@ -249,7 +249,7 @@ button.secondary { background: #333; }
       <label class="small">Foto etichetta</label>
       <input type="file" id="dbPhoto" accept="image/*" capture="environment">
       <p class="small" id="dbOcr">Foto anche storta o in ombra: i campi si compilano da soli. Può richiedere mezzo minuto. Controllali.</p>
-      <img id="dbPreview" alt="" class="hidden" style="width:100%;border-radius:10px;margin-top:8px;max-height:180px;object-fit:cover">
+      <img id="dbPreview" alt="" class="hidden" style="width:100%;border-radius:10px;margin-top:8px;max-height:520px;object-fit:contain;background:#111">
       <label class="small">Nome</label>
       <input id="dbName" placeholder="es. Riso, carote, ragù">
       <div class="small" style="margin-top:8px">Valori per 100 g</div>
@@ -1023,16 +1023,18 @@ async function fillFromLabel(file, ids) {
   try {
     const base = await loadLabelCanvas(file);
     const worker = await getOcr();
-    const ink = cleanTableCanvas(inkCanvas(base));
-    ocrAttempt = 'Etichetta';
     await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '' });
-    const res = await worker.recognize(await canvasBlob(ink));
-    const data = res.data || {};
+    ocrAttempt = 'Foto intera';
+    const ink = cleanTableCanvas(inkCanvas(base));
+    let res = await worker.recognize(await canvasBlob(ink));
+    let data = res.data || {};
     let parsed = bestNutrition(data.text, data.words || []);
     if (nutritionScore(parsed) < 3) {
-      ocrAttempt = 'Colonne';
-      const split = await readSplitLabel(worker, ink);
-      parsed = nutritionScore(split) > nutritionScore(parsed) ? preferNutrition(split, parsed) : preferNutrition(parsed, split);
+      ocrAttempt = 'Originale';
+      res = await worker.recognize(await canvasBlob(base));
+      data = res.data || {};
+      const alt = bestNutrition(data.text, data.words || []);
+      parsed = nutritionScore(alt) > nutritionScore(parsed) ? preferNutrition(alt, parsed) : preferNutrition(parsed, alt);
     }
     ocrAttempt = '';
     const n = applyNutrition(parsed, ids);
