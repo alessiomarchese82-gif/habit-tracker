@@ -691,6 +691,25 @@ function cleanTableCanvas(src) {
   ctx.putImageData(img, 0, 0);
   return c;
 }
+function inkCanvas(src) {
+  const c = copyCanvas(src);
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  const img = ctx.getImageData(0, 0, c.width, c.height);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i];
+    const g = d[i + 1];
+    const b = d[i + 2];
+    const orange = r > 150 && r > g + 25 && g > b + 10;
+    const white = r > 185 && g > 185 && b > 175;
+    const green = g > r + 12 && g > b + 12 && g < 220;
+    const dark = Math.min(r, g, b) < 150;
+    const v = !orange && !white && (green || dark) ? 0 : 255;
+    d[i] = d[i + 1] = d[i + 2] = v;
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
 function copyCanvas(src) {
   const c = document.createElement('canvas');
   c.width = src.width;
@@ -1004,14 +1023,16 @@ async function fillFromLabel(file, ids) {
   try {
     const base = await loadLabelCanvas(file);
     const worker = await getOcr();
-    ocrAttempt = 'Colonne';
-    let parsed = await readSplitLabel(worker, base);
+    const ink = cleanTableCanvas(inkCanvas(base));
+    ocrAttempt = 'Etichetta';
+    await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '' });
+    const res = await worker.recognize(await canvasBlob(ink));
+    const data = res.data || {};
+    let parsed = bestNutrition(data.text, data.words || []);
     if (nutritionScore(parsed) < 3) {
-      ocrAttempt = 'Tabella';
-      await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '' });
-      const res = await worker.recognize(await canvasBlob(base));
-      const data = res.data || {};
-      parsed = preferNutrition(parsed, bestNutrition(data.text, data.words || []));
+      ocrAttempt = 'Colonne';
+      const split = await readSplitLabel(worker, ink);
+      parsed = nutritionScore(split) > nutritionScore(parsed) ? preferNutrition(split, parsed) : preferNutrition(parsed, split);
     }
     ocrAttempt = '';
     const n = applyNutrition(parsed, ids);
