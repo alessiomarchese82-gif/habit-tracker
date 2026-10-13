@@ -643,28 +643,16 @@ function prepareLabelImage(file) {
     const img = new Image();
     const url = URL.createObjectURL(file);
     img.onload = () => {
-      const max = 1800;
       let w = img.naturalWidth || img.width;
       let h = img.naturalHeight || img.height;
-      const fit = Math.min(1, max / Math.max(w, h));
-      const up = Math.max(w, h) < 900 ? Math.min(2, 900 / Math.max(w, h)) : 1;
-      w = Math.max(1, Math.round(w * fit * up));
-      h = Math.max(1, Math.round(h * fit * up));
+      const long = Math.max(w, h);
+      const scale = long > 2200 ? 2200 / long : (long < 1400 ? Math.min(2, 1400 / long) : 1);
+      w = Math.max(1, Math.round(w * scale));
+      h = Math.max(1, Math.round(h * scale));
       const c = document.createElement('canvas');
       c.width = w;
       c.height = h;
-      const ctx = c.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(img, 0, 0, w, h);
-      const id = ctx.getImageData(0, 0, w, h);
-      const d = id.data;
-      for (let i = 0; i < d.length; i += 4) {
-        let y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-        y = (y - 140) * 1.8 + 140;
-        if (y < 0) y = 0;
-        if (y > 255) y = 255;
-        d[i] = d[i + 1] = d[i + 2] = y;
-      }
-      ctx.putImageData(id, 0, 0);
+      c.getContext('2d').drawImage(img, 0, 0, w, h);
       URL.revokeObjectURL(url);
       c.toBlob(b => b ? resolve(b) : reject(new Error('foto')), 'image/png');
     };
@@ -673,31 +661,104 @@ function prepareLabelImage(file) {
   });
 }
 
+function nutritionScore(p) {
+  return ['kcal', 'prot', 'carb', 'fat'].reduce((n, k) => n + (p && p[k] != null ? 1 : 0), 0);
+}
+function nutritionNum(s) {
+  return parseFloat(String(s).replace(',', '.'));
+}
+function firstAmount(text) {
+  const m = String(text || '').match(/(\d+)\s*[.,]\s*(\d+)/);
+  if (m) return Math.round(parseFloat(m[1] + '.' + m[2]) * 10) / 10;
+  const i = String(text || '').match(/(\d+)/);
+  return i ? parseFloat(i[1]) : null;
+}
+function energyToKcal(text) {
+  const kcal = [...String(text).matchAll(/(\d+[.,]\d+|\d+)\s*k\s*c\s*a\s*[l1i]/gi)];
+  if (kcal.length) return Math.round(nutritionNum(kcal[kcal.length - 1][1]));
+  const nums = [...String(text).matchAll(/(\d+[.,]\d+|\d+)/g)].map(m => nutritionNum(m[1]));
+  if (/k\s*j/i.test(text) && nums.length >= 2) return Math.round(nums[nums.length - 1]);
+  if (/k\s*j/i.test(text) && nums.length === 1) return Math.round(nums[0] / 4.184);
+  if (nums.length >= 2) return Math.round(nums[nums.length - 1]);
+  if (nums.length === 1) return Math.round(nums[0]);
+  return null;
+}
+function assignNutrient(out, label, valueText) {
+  const l = label.toLowerCase();
+  if (/energia|kcal|kj/.test(l)) {
+    const k = energyToKcal(valueText || label);
+    if (k != null) out.kcal = k;
+    return;
+  }
+  if (/grassi|\bfat\b/.test(l) && !/satur|di cui/.test(l)) {
+    const n = firstAmount(valueText);
+    if (n != null) out.fat = n;
+    return;
+  }
+  if (/carboidrat|carbohyd/.test(l) && !/zuccher|di cui/.test(l)) {
+    const n = firstAmount(valueText);
+    if (n != null) out.carb = n;
+    return;
+  }
+  if (/protein/.test(l) && !/di cui/.test(l)) {
+    const n = firstAmount(valueText);
+    if (n != null) out.prot = n;
+  }
+}
 function parseNutrition(text) {
   const raw = String(text || '').replace(/\u00a0/g, ' ');
   const lines = raw.split(/\n/).map(l => l.trim()).filter(Boolean);
-  const num = s => parseFloat(String(s).replace(',', '.'));
   const out = {};
-  const kcal = /(\d+[.,]\d+|\d+)\s*k\s*c\s*a\s*[l1|i]/i.exec(raw);
-  if (kcal) out.kcal = Math.round(num(kcal[1]));
-  else {
-    const kj = /(\d+[.,]\d+|\d+)\s*k\s*j/i.exec(raw);
-    if (kj) out.kcal = Math.round(num(kj[1]) / 4.184);
-  }
-  const fromLines = (tests, reject) => {
-    for (const line of lines) {
-      const l = line.toLowerCase();
-      if (!tests.some(t => t.test(l))) continue;
-      if (reject && reject(l)) continue;
-      const m = line.match(/(\d+[.,]\d+|\d+)/);
-      if (m) return Math.round(num(m[1]) * 10) / 10;
-    }
-    return null;
-  };
-  out.fat = fromLines([/\bgrassi\b/, /\bfat\b/], l => /satur|di cui/.test(l));
-  out.carb = fromLines([/carboidrat/, /carbohyd/], l => /zuccher|di cui/.test(l));
-  out.prot = fromLines([/protein/], l => /di cui/.test(l));
+  const kcal = energyToKcal(raw);
+  if (kcal != null) out.kcal = kcal;
+  for (const line of lines) assignNutrient(out, line, line);
   return out;
+}
+function wordBox(w) {
+  const b = w.bbox || w;
+  return { x0: b.x0 || 0, y0: b.y0 || 0, x1: b.x1 || 0, y1: b.y1 || 0, text: w.text || '' };
+}
+function clusterRows(words) {
+  const items = words.map(wordBox).filter(w => w.text.trim());
+  if (!items.length) return [];
+  const heights = items.map(w => Math.max(8, w.y1 - w.y0)).sort((a, b) => a - b);
+  const tol = heights[Math.floor(heights.length / 2)] * 0.7;
+  const rows = [];
+  items.sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
+  for (const w of items) {
+    const cy = (w.y0 + w.y1) / 2;
+    let row = null;
+    for (const r of rows) if (Math.abs(r.cy - cy) <= tol) row = r;
+    if (!row) {
+      row = { cy, words: [] };
+      rows.push(row);
+    }
+    row.words.push(w);
+    row.cy = row.words.reduce((s, x) => s + (x.y0 + x.y1) / 2, 0) / row.words.length;
+  }
+  rows.sort((a, b) => a.cy - b.cy);
+  rows.forEach(r => r.words.sort((a, b) => a.x0 - b.x0));
+  return rows;
+}
+function parseNutritionWords(words) {
+  const rows = clusterRows(words || []);
+  if (!rows.length) return {};
+  const maxX = Math.max(...rows.flatMap(r => r.words.map(w => w.x1)));
+  const mid = maxX * 0.58;
+  const out = {};
+  for (const row of rows) {
+    const left = row.words.filter(w => (w.x0 + w.x1) / 2 < mid);
+    const right = row.words.filter(w => (w.x0 + w.x1) / 2 >= mid);
+    const label = (left.length ? left : row.words).map(w => w.text).join(' ');
+    const value = (right.length ? right : []).map(w => w.text).join(' ');
+    assignNutrient(out, label, value || label);
+  }
+  return out;
+}
+function bestNutrition(text, words) {
+  const a = parseNutrition(text);
+  const b = parseNutritionWords(words);
+  return nutritionScore(b) > nutritionScore(a) ? b : a;
 }
 
 function setOcrStatus(text) {
@@ -731,6 +792,23 @@ function applyNutrition(parsed, ids) {
   return n;
 }
 
+function nutritionStatus(parsed) {
+  const bits = [];
+  if (parsed.kcal != null) bits.push(parsed.kcal + ' kcal');
+  if (parsed.prot != null) bits.push('P ' + parsed.prot);
+  if (parsed.carb != null) bits.push('C ' + parsed.carb);
+  if (parsed.fat != null) bits.push('G ' + parsed.fat);
+  if (bits.length >= 3) return 'Letti: ' + bits.join(', ') + '. Controlla.';
+  if (bits.length) return 'Lettura incompleta (' + bits.join(', ') + '). Avvicina solo la tabella.';
+  return 'Non ho letto i numeri. Inquadra solo la tabella, dritta.';
+}
+
+async function recognizeLabel(worker, image) {
+  const res = await worker.recognize(image);
+  const data = res.data || {};
+  return bestNutrition(data.text, data.words || []);
+}
+
 async function fillFromLabel(file, ids) {
   ocrStatusEl = document.getElementById(ids.status);
   if (!file) return;
@@ -738,20 +816,17 @@ async function fillFromLabel(file, ids) {
   try {
     const image = await prepareLabelImage(file);
     const worker = await getOcr();
-    let res = await worker.recognize(image);
-    let parsed = parseNutrition(res.data && res.data.text);
-    let n = applyNutrition(parsed, ids);
-    if (!n) {
-      setOcrStatus('Riprovo con un\'altra lettura...');
+    await worker.setParameters({ tessedit_pageseg_mode: '6' });
+    let parsed = await recognizeLabel(worker, image);
+    if (nutritionScore(parsed) < 3) {
+      setOcrStatus('Riprovo sulla foto originale...');
       await worker.setParameters({ tessedit_pageseg_mode: '4' });
-      res = await worker.recognize(image);
+      const second = await recognizeLabel(worker, file);
       await worker.setParameters({ tessedit_pageseg_mode: '6' });
-      parsed = parseNutrition(res.data && res.data.text);
-      n = applyNutrition(parsed, ids);
+      if (nutritionScore(second) > nutritionScore(parsed)) parsed = second;
     }
-    setOcrStatus(n
-      ? 'Valori letti. Controlla prima di salvare.'
-      : 'Non ho letto i numeri. Inquadra solo la tabella, con luce, e riprova.');
+    const n = applyNutrition(parsed, ids);
+    setOcrStatus(n ? nutritionStatus(parsed) : 'Non ho letto i numeri. Inquadra solo la tabella, dritta.');
   } catch (e) {
     ocrWorker = null;
     const msg = e && e.message === 'formato'
