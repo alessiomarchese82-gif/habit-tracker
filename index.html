@@ -202,7 +202,7 @@ button.secondary { background: #333; }
       <p class="small">Fotografa l'etichetta e salva i valori per 100 g. Resta solo su questo telefono.</p>
       <label class="small">Foto etichetta</label>
       <input type="file" id="labelPhoto" accept="image/*" capture="environment">
-      <p class="small" id="labelOcr">Foto etichetta: i campi si compilano da soli. Controllali.</p>
+      <p class="small" id="labelOcr">Foto anche storta o in ombra: i campi si compilano da soli. Può richiedere mezzo minuto. Controllali.</p>
       <img id="labelPreview" alt="" class="hidden" style="width:100%;border-radius:10px;margin-top:8px;max-height:220px;object-fit:cover">
       <label class="small">Nome</label>
       <input id="customName" placeholder="es. Yogurt greco">
@@ -248,7 +248,7 @@ button.secondary { background: #333; }
       <p class="small">Lo prepari qui, senza legarlo a un giorno. Poi lo usi nel diario o in un piatto.</p>
       <label class="small">Foto etichetta</label>
       <input type="file" id="dbPhoto" accept="image/*" capture="environment">
-      <p class="small" id="dbOcr">Foto etichetta: i campi si compilano da soli. Controllali.</p>
+      <p class="small" id="dbOcr">Foto anche storta o in ombra: i campi si compilano da soli. Può richiedere mezzo minuto. Controllali.</p>
       <img id="dbPreview" alt="" class="hidden" style="width:100%;border-radius:10px;margin-top:8px;max-height:180px;object-fit:cover">
       <label class="small">Nome</label>
       <input id="dbName" placeholder="es. Riso, carote, ragù">
@@ -637,8 +637,9 @@ function compressImage(file) {
 
 let ocrWorker = null;
 let ocrStatusEl = null;
+let ocrAttempt = '';
 
-function prepareLabelImage(file) {
+function loadLabelCanvas(file) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
@@ -646,7 +647,7 @@ function prepareLabelImage(file) {
       let w = img.naturalWidth || img.width;
       let h = img.naturalHeight || img.height;
       const long = Math.max(w, h);
-      const scale = long > 2200 ? 2200 / long : (long < 1400 ? Math.min(2, 1400 / long) : 1);
+      const scale = long > 1800 ? 1800 / long : (long < 1200 ? Math.min(2, 1200 / long) : 1);
       w = Math.max(1, Math.round(w * scale));
       h = Math.max(1, Math.round(h * scale));
       const c = document.createElement('canvas');
@@ -654,55 +655,137 @@ function prepareLabelImage(file) {
       c.height = h;
       c.getContext('2d').drawImage(img, 0, 0, w, h);
       URL.revokeObjectURL(url);
-      c.toBlob(b => b ? resolve(b) : reject(new Error('foto')), 'image/png');
+      resolve(c);
     };
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('formato')); };
     img.src = url;
   });
 }
+function canvasBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(b => b ? resolve(b) : reject(new Error('foto')), 'image/png');
+  });
+}
+function copyCanvas(src) {
+  const c = document.createElement('canvas');
+  c.width = src.width;
+  c.height = src.height;
+  c.getContext('2d').drawImage(src, 0, 0);
+  return c;
+}
+function stretchCanvas(src) {
+  const c = copyCanvas(src);
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  const img = ctx.getImageData(0, 0, c.width, c.height);
+  const d = img.data;
+  const gray = new Uint8Array(d.length / 4);
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) gray[p] = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) | 0;
+  const sorted = Array.from(gray).sort((a, b) => a - b);
+  const lo = sorted[Math.floor(sorted.length * 0.05)];
+  const hi = sorted[Math.floor(sorted.length * 0.95)] || 255;
+  const span = Math.max(20, hi - lo);
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    let y = (gray[p] - lo) * 255 / span;
+    if (y < 0) y = 0;
+    if (y > 255) y = 255;
+    d[i] = d[i + 1] = d[i + 2] = y;
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+function binaryCanvas(src) {
+  const c = copyCanvas(src);
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  const img = ctx.getImageData(0, 0, c.width, c.height);
+  const w = c.width;
+  const h = c.height;
+  const d = img.data;
+  const gray = new Uint8Array(w * h);
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) gray[p] = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) | 0;
+  const ii = new Float64Array((w + 1) * (h + 1));
+  for (let y = 1; y <= h; y++) {
+    let row = 0;
+    for (let x = 1; x <= w; x++) {
+      row += gray[(y - 1) * w + (x - 1)];
+      ii[y * (w + 1) + x] = ii[(y - 1) * (w + 1) + x] + row;
+    }
+  }
+  const r = Math.max(12, Math.round(Math.min(w, h) / 40));
+  for (let y = 0; y < h; y++) {
+    const y1 = Math.max(0, y - r);
+    const y2 = Math.min(h - 1, y + r);
+    for (let x = 0; x < w; x++) {
+      const x1 = Math.max(0, x - r);
+      const x2 = Math.min(w - 1, x + r);
+      const area = (x2 - x1 + 1) * (y2 - y1 + 1);
+      const sum = ii[(y2 + 1) * (w + 1) + (x2 + 1)] - ii[y1 * (w + 1) + (x2 + 1)] - ii[(y2 + 1) * (w + 1) + x1] + ii[y1 * (w + 1) + x1];
+      const v = gray[y * w + x] < sum / area - 10 ? 0 : 255;
+      const i = (y * w + x) * 4;
+      d[i] = d[i + 1] = d[i + 2] = v;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
 
 function nutritionScore(p) {
   return ['kcal', 'prot', 'carb', 'fat'].reduce((n, k) => n + (p && p[k] != null ? 1 : 0), 0);
 }
+function mergeNutrition(base, extra) {
+  const out = Object.assign({}, base || {});
+  ['kcal', 'prot', 'carb', 'fat'].forEach(k => {
+    if (!extra || extra[k] == null) return;
+    if (out[k] == null || (out[k] === 0 && extra[k] > 0)) out[k] = extra[k];
+  });
+  return out;
+}
 function nutritionNum(s) {
   return parseFloat(String(s).replace(',', '.'));
 }
+function fixDigits(text) {
+  return String(text || '').replace(/[oO]/g, '0').replace(/[lI|]/g, '1');
+}
 function firstAmount(text) {
-  const m = String(text || '').match(/(\d+)\s*[.,]\s*(\d+)/);
+  const t = fixDigits(text);
+  const m = t.match(/(\d+)\s*[.,]\s*(\d+)/);
   if (m) return Math.round(parseFloat(m[1] + '.' + m[2]) * 10) / 10;
-  const i = String(text || '').match(/(\d+)/);
+  const i = t.match(/(\d+)/);
   return i ? parseFloat(i[1]) : null;
 }
 function energyToKcal(text) {
-  const kcal = [...String(text).matchAll(/(\d+[.,]\d+|\d+)\s*k\s*c\s*a\s*[l1i]/gi)];
+  const t = fixDigits(text);
+  const kcal = [...t.matchAll(/(\d+[.,]\d+|\d+)\s*k\s*c\s*a\s*[l1i]/gi)];
   if (kcal.length) return Math.round(nutritionNum(kcal[kcal.length - 1][1]));
-  const nums = [...String(text).matchAll(/(\d+[.,]\d+|\d+)/g)].map(m => nutritionNum(m[1]));
-  if (/k\s*j/i.test(text) && nums.length >= 2) return Math.round(nums[nums.length - 1]);
-  if (/k\s*j/i.test(text) && nums.length === 1) return Math.round(nums[0] / 4.184);
+  const nums = [...t.matchAll(/(\d+[.,]\d+|\d+)/g)].map(m => nutritionNum(m[1]));
+  if (/k\s*j/i.test(t) && nums.length >= 2) return Math.round(nums[nums.length - 1]);
+  if (/k\s*j/i.test(t) && nums.length === 1) return Math.round(nums[0] / 4.184);
   if (nums.length >= 2) return Math.round(nums[nums.length - 1]);
   if (nums.length === 1) return Math.round(nums[0]);
   return null;
 }
+function foldLabel(s) {
+  return String(s || '').toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/0/g, 'o').replace(/1/g, 'i').replace(/5/g, 's').replace(/6/g, 'g').replace(/8/g, 'b')
+    .replace(/[^a-z\s]/g, ' ');
+}
+function labelKind(label) {
+  const l = foldLabel(label);
+  if (/satur/.test(l) || /zuccher|zucker/.test(l) || /\bfibr/.test(l) || /\bsale\b|\bsalt\b/.test(l)) return 'skip';
+  if (/energ|kcal|kca|chilocal|\bkj\b/.test(l)) return 'kcal';
+  if (/grass|\bfat\b/.test(l) && !/di cui/.test(l)) return 'fat';
+  if (/carb/.test(l) && !/di cui/.test(l)) return 'carb';
+  if (/prot/.test(l) && !/di cui/.test(l)) return 'prot';
+  return '';
+}
 function assignNutrient(out, label, valueText) {
-  const l = label.toLowerCase();
-  if (/energia|kcal|kj/.test(l)) {
+  const kind = labelKind(label);
+  if (kind === 'kcal') {
     const k = energyToKcal(valueText || label);
     if (k != null) out.kcal = k;
-    return;
-  }
-  if (/grassi|\bfat\b/.test(l) && !/satur|di cui/.test(l)) {
+  } else if (kind === 'fat' || kind === 'carb' || kind === 'prot') {
     const n = firstAmount(valueText);
-    if (n != null) out.fat = n;
-    return;
-  }
-  if (/carboidrat|carbohyd/.test(l) && !/zuccher|di cui/.test(l)) {
-    const n = firstAmount(valueText);
-    if (n != null) out.carb = n;
-    return;
-  }
-  if (/protein/.test(l) && !/di cui/.test(l)) {
-    const n = firstAmount(valueText);
-    if (n != null) out.prot = n;
+    if (n != null) out[kind] = n;
   }
 }
 function parseNutrition(text) {
@@ -755,10 +838,25 @@ function parseNutritionWords(words) {
   }
   return out;
 }
+function parseColumnZip(words) {
+  const items = (words || []).map(wordBox).filter(w => w.text.trim());
+  if (items.length < 4) return {};
+  const maxX = Math.max(...items.map(w => w.x1));
+  const mid = maxX * 0.5;
+  const left = clusterRows(items.filter(w => (w.x0 + w.x1) / 2 < mid).map(w => ({ text: w.text, bbox: w })));
+  const right = clusterRows(items.filter(w => (w.x0 + w.x1) / 2 >= mid).map(w => ({ text: w.text, bbox: w })));
+  const labels = left.map(r => r.words.map(w => w.text).join(' ')).filter(t => labelKind(t));
+  const values = right.map(r => r.words.map(w => w.text).join(' ')).filter(t => firstAmount(t) != null || /kcal|kj/i.test(t));
+  const out = {};
+  if (labels.length && labels.length === values.length) {
+    labels.forEach((label, i) => assignNutrient(out, label, values[i]));
+  }
+  return out;
+}
 function bestNutrition(text, words) {
-  const a = parseNutrition(text);
-  const b = parseNutritionWords(words);
-  return nutritionScore(b) > nutritionScore(a) ? b : a;
+  const parts = [parseNutritionWords(words), parseColumnZip(words), parseNutrition(text)];
+  return parts.sort((a, b) => nutritionScore(b) - nutritionScore(a))
+    .reduce((best, cur) => mergeNutrition(best, cur), {});
 }
 
 function setOcrStatus(text) {
@@ -774,9 +872,10 @@ async function getOcr() {
     corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1/tesseract-core-lstm.wasm.js',
     langPath: 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/ita@1.0.0/4.0.0_best_int',
     logger(m) {
-      if (m.status === 'recognizing text') setOcrStatus('Lettura ' + Math.round((m.progress || 0) * 100) + '%');
+      const prefix = ocrAttempt ? ocrAttempt + ' · ' : '';
+      if (m.status === 'recognizing text') setOcrStatus(prefix + 'Lettura ' + Math.round((m.progress || 0) * 100) + '%');
       else if (String(m.status || '').includes('language')) setOcrStatus('Scarico la lingua italiana...');
-      else if (m.status) setOcrStatus('Preparo la lettura...');
+      else if (m.status) setOcrStatus(prefix + 'Preparo la lettura...');
     }
   });
   await ocrWorker.setParameters({ tessedit_pageseg_mode: '6' });
@@ -812,25 +911,36 @@ async function recognizeLabel(worker, image) {
 async function fillFromLabel(file, ids) {
   ocrStatusEl = document.getElementById(ids.status);
   if (!file) return;
-  setOcrStatus('Leggo l\'etichetta...');
+  setOcrStatus('Preparo la foto...');
   try {
-    const image = await prepareLabelImage(file);
+    const base = await loadLabelCanvas(file);
+    const images = [
+      await canvasBlob(base),
+      await canvasBlob(binaryCanvas(base)),
+      await canvasBlob(stretchCanvas(base))
+    ];
     const worker = await getOcr();
     await worker.setParameters({ tessedit_pageseg_mode: '6' });
-    let parsed = await recognizeLabel(worker, image);
-    if (nutritionScore(parsed) < 3) {
-      setOcrStatus('Riprovo sulla foto originale...');
-      await worker.setParameters({ tessedit_pageseg_mode: '4' });
-      const second = await recognizeLabel(worker, file);
-      await worker.setParameters({ tessedit_pageseg_mode: '6' });
-      if (nutritionScore(second) > nutritionScore(parsed)) parsed = second;
+    let parsed = {};
+    for (let i = 0; i < images.length; i++) {
+      if (nutritionScore(parsed) >= 4) break;
+      ocrAttempt = 'Foto ' + (i + 1) + '/' + images.length;
+      parsed = mergeNutrition(parsed, await recognizeLabel(worker, images[i]));
     }
+    if (nutritionScore(parsed) < 3) {
+      ocrAttempt = 'Ultimo tentativo';
+      await worker.setParameters({ tessedit_pageseg_mode: '11' });
+      parsed = mergeNutrition(parsed, await recognizeLabel(worker, images[1]));
+      await worker.setParameters({ tessedit_pageseg_mode: '6' });
+    }
+    ocrAttempt = '';
     const n = applyNutrition(parsed, ids);
-    setOcrStatus(n ? nutritionStatus(parsed) : 'Non ho letto i numeri. Inquadra solo la tabella, dritta.');
+    setOcrStatus(n ? nutritionStatus(parsed) : 'Non ho letto i numeri. Riprova, anche più da vicino.');
   } catch (e) {
     ocrWorker = null;
+    ocrAttempt = '';
     const msg = e && e.message === 'formato'
-      ? 'Questa foto non si legge. Rifalla dalla fotocamera, non dalla libreria.'
+      ? 'Questa foto non si legge. Rifalla dalla fotocamera.'
       : 'Lettura non riuscita. Serve internet la prima volta, poi riprova.';
     setOcrStatus(msg);
   }
