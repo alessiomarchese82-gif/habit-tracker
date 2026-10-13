@@ -166,6 +166,7 @@ button.secondary { background: #333; }
     <h3>Aggiungi cibo - <span id="modalMeal"></span></h3>
     <div class="mode-switch">
       <button type="button" class="secondary" id="modeBtnCerca" onclick="setFoodMode('cerca')">Cerca</button>
+      <button type="button" class="secondary" id="modeBtnEtichetta" onclick="setFoodMode('etichetta')">Nuovo</button>
       <button type="button" class="secondary" id="modeBtnScrivi" onclick="setFoodMode('scrivi')">Scrivi</button>
       <button type="button" class="secondary" id="modeBtnPiatti" onclick="setFoodMode('piatti')">Piatti</button>
       <button type="button" class="secondary" id="modeBtnMiei" onclick="setFoodMode('miei')">I miei</button>
@@ -182,6 +183,7 @@ button.secondary { background: #333; }
         <label class="small">Quantità (grammi)</label>
         <input type="number" id="foodGrams" value="100" min="1">
         <button class="primary" onclick="confirmAddFood()">Aggiungi al diario</button>
+        <button class="secondary" onclick="saveSelectedToDb()">Salva nel database</button>
       </div>
     </div>
 
@@ -425,7 +427,7 @@ function cancelAdd() {
 }
 
 function setFoodMode(mode) {
-  ['cerca','scrivi','piatti','miei'].forEach(m => {
+  ['cerca','etichetta','scrivi','piatti','miei'].forEach(m => {
     document.getElementById('mode' + m.charAt(0).toUpperCase() + m.slice(1)).classList.toggle('hidden', m !== mode);
     const btn = document.getElementById('modeBtn' + m.charAt(0).toUpperCase() + m.slice(1));
     btn.classList.toggle('primary', m === mode);
@@ -524,6 +526,25 @@ function confirmAddFood() {
   data.foods.push(item);
   save();
   cancelAdd();
+}
+
+function saveSelectedToDb() {
+  if (!selectedProduct || !selectedProduct.product_name) return;
+  const name = selectedProduct.product_name;
+  const n = selectedProduct.nutriments || {};
+  const existing = data.customFoods.find(f => f.name.toLowerCase() === name.toLowerCase());
+  if (existing) return alert('Già nel database');
+  data.customFoods.push({
+    id: Date.now(),
+    name,
+    kcal100: Math.round(n['energy-kcal_100g'] || 0),
+    prot100: Math.round((n.proteins_100g || 0) * 10) / 10,
+    carb100: Math.round((n.carbohydrates_100g || 0) * 10) / 10,
+    fat100: Math.round((n.fat_100g || 0) * 10) / 10,
+    photoId: null
+  });
+  save();
+  alert('Salvato nel database');
 }
 
 function addManualFood() {
