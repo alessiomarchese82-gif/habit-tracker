@@ -666,6 +666,31 @@ function canvasBlob(canvas) {
     canvas.toBlob(b => b ? resolve(b) : reject(new Error('foto')), 'image/png');
   });
 }
+function cleanTableCanvas(src) {
+  const c = copyCanvas(src);
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  const img = ctx.getImageData(0, 0, c.width, c.height);
+  const w = c.width;
+  const h = c.height;
+  const d = img.data;
+  const darkAt = (x, y) => {
+    const i = (y * w + x) * 4;
+    return d[i] + d[i + 1] + d[i + 2] < 420;
+  };
+  for (let y = 0; y < h; y++) {
+    let n = 0;
+    const step = 2;
+    for (let x = 0; x < w; x += step) if (darkAt(x, y)) n++;
+    if (n > (w / step) * 0.65) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        d[i] = d[i + 1] = d[i + 2] = 255;
+      }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
 function copyCanvas(src) {
   const c = document.createElement('canvas');
   c.width = src.width;
@@ -815,8 +840,14 @@ function zipLabelsAndNumbers(labelText, numberText) {
   const labels = String(labelText || '').split(/\n/).map(s => s.trim()).filter(s => labelKind(s));
   const values = amountsInOrder(numberText);
   const out = {};
-  if (labels.length < 3 || labels.length !== values.length) return out;
-  labels.forEach((label, i) => assignNutrient(out, label, String(values[i])));
+  if (labels.length >= 3 && labels.length === values.length) {
+    labels.forEach((label, i) => assignNutrient(out, label, String(values[i])));
+    return out;
+  }
+  const lines = String(labelText || '').split(/\n/).map(s => s.trim()).filter(Boolean);
+  if (lines.length >= 3 && lines.length === values.length) {
+    lines.forEach((label, i) => assignNutrient(out, label, String(values[i])));
+  }
   return out;
 }
 function cropCanvas(src, x0, x1, scale) {
@@ -930,6 +961,7 @@ function nutritionStatus(parsed) {
   if (parsed.prot != null) bits.push('P ' + parsed.prot);
   if (parsed.carb != null) bits.push('C ' + parsed.carb);
   if (parsed.fat != null) bits.push('G ' + parsed.fat);
+  if (bits.length >= 3 && parsed.kcal == null) return 'Letti: ' + bits.join(', ') + '. Nella foto non c’è la riga energia.';
   if (bits.length >= 3) return 'Letti: ' + bits.join(', ') + '. Controlla.';
   if (bits.length) return 'Lettura incompleta (' + bits.join(', ') + '). Avvicina solo la tabella.';
   return 'Non ho letto i numeri. Inquadra solo la tabella, dritta.';
@@ -940,16 +972,22 @@ async function recognizeText(worker, image) {
   return (res.data && res.data.text) || '';
 }
 async function readSplitLabel(worker, canvas) {
-  await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '' });
-  const left = await recognizeText(worker, await canvasBlob(cropCanvas(canvas, 0, 0.72, 1.6)));
-  await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '0123456789,.' });
-  let numbers = '';
-  try {
-    numbers = await recognizeText(worker, await canvasBlob(cropCanvas(canvas, 0.55, 1, 2)));
-  } finally {
-    await worker.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '6' });
+  const tables = [cleanTableCanvas(canvas), binaryCanvas(cleanTableCanvas(canvas))];
+  let parsed = {};
+  for (const table of tables) {
+    if (nutritionScore(parsed) >= 3) break;
+    await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '' });
+    const left = await recognizeText(worker, await canvasBlob(cropCanvas(table, 0, 0.72, 1.6)));
+    await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '0123456789,.' });
+    let numbers = '';
+    try {
+      numbers = await recognizeText(worker, await canvasBlob(cropCanvas(table, 0.52, 1, 2)));
+    } finally {
+      await worker.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '6' });
+    }
+    parsed = preferNutrition(zipLabelsAndNumbers(left, numbers), parsed);
   }
-  return zipLabelsAndNumbers(left, numbers);
+  return parsed;
 }
 function preferNutrition(primary, extra) {
   const out = Object.assign({}, extra || {});
