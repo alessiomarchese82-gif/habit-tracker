@@ -7,7 +7,6 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Habit Tracker</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 <style>
 :root {
   --bg: #111; --card: #1e1e1e; --text: #f5f5f5; --muted: #999;
@@ -15,6 +14,9 @@
   --border: #333; --input: #2a2a2a;
 }
 * { box-sizing: border-box; }
+#scanOverlay { position: fixed; inset: 0; z-index: 80; background: #000; padding: 16px; }
+#scanOverlay:not(.hidden) { display: flex; flex-direction: column; }
+#barcodeCam { width: 100%; flex: 1; }
 body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px)); }
 .topbar { position: sticky; top: 0; z-index: 20; background: #000; padding-top: env(safe-area-inset-top, 0px); }
 header { background: #000; padding: 10px 16px 6px; display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
@@ -199,13 +201,15 @@ button.secondary { background: #333; }
     </div>
 
     <div id="modeEtichetta" class="hidden">
-      <p class="small">Fotografa l'etichetta e salva i valori per 100 g. Resta solo su questo telefono.</p>
-      <label class="small">Foto etichetta</label>
-      <input type="file" id="labelPhoto" accept="image/*" capture="environment">
-      <p class="small" id="labelOcr">Foto anche storta o in ombra: i campi si compilano da soli. Può richiedere mezzo minuto. Controllali.</p>
-      <img id="labelPreview" alt="" class="hidden" style="width:100%;border-radius:10px;margin-top:8px;max-height:520px;object-fit:contain;background:#111">
+      <p class="small">Prima il codice o il nome. Se non esce niente, scrivi i valori a mano.</p>
+      <label class="small">Codice a barre</label>
+      <input id="customBarcode" inputmode="numeric" placeholder="es. 8076800195057">
+      <button class="secondary" type="button" onclick="lookupBarcode('custom')">Cerca codice</button>
+      <button class="secondary" type="button" onclick="scanBarcode('custom')">Scansiona</button>
       <label class="small">Nome</label>
       <input id="customName" placeholder="es. Yogurt greco">
+      <button class="secondary" type="button" onclick="lookupAverage('custom')">Media da internet</button>
+      <p class="small" id="customLookup"></p>
       <div class="small" style="margin-top:8px">Valori per 100 g</div>
       <div class="row">
         <div><label class="small">kcal</label><input type="number" id="customKcal"></div>
@@ -237,6 +241,10 @@ button.secondary { background: #333; }
   </div>
 </div>
 
+<div id="scanOverlay" class="hidden">
+  <div id="barcodeCam"></div>
+  <button class="secondary" type="button" onclick="stopBarcodeScan()">Chiudi fotocamera</button>
+</div>
 <div id="database" class="section hidden">
   <div class="mode-switch">
     <button type="button" class="primary" id="dbTabCibi" onclick="setDbTab('cibi')">Cibi</button>
@@ -245,13 +253,15 @@ button.secondary { background: #333; }
   <div id="dbCibi">
     <div class="card">
       <h3>Nuovo cibo</h3>
-      <p class="small">Lo prepari qui, senza legarlo a un giorno. Poi lo usi nel diario o in un piatto.</p>
-      <label class="small">Foto etichetta</label>
-      <input type="file" id="dbPhoto" accept="image/*" capture="environment">
-      <p class="small" id="dbOcr">Foto anche storta o in ombra: i campi si compilano da soli. Può richiedere mezzo minuto. Controllali.</p>
-      <img id="dbPreview" alt="" class="hidden" style="width:100%;border-radius:10px;margin-top:8px;max-height:520px;object-fit:contain;background:#111">
+      <p class="small">Codice, nome o valori scritti a mano. Poi lo usi nel diario.</p>
+      <label class="small">Codice a barre</label>
+      <input id="dbBarcode" inputmode="numeric" placeholder="es. 8076800195057">
+      <button class="secondary" type="button" onclick="lookupBarcode('db')">Cerca codice</button>
+      <button class="secondary" type="button" onclick="scanBarcode('db')">Scansiona</button>
       <label class="small">Nome</label>
       <input id="dbName" placeholder="es. Riso, carote, ragù">
+      <button class="secondary" type="button" onclick="lookupAverage('db')">Media da internet</button>
+      <p class="small" id="dbLookup"></p>
       <div class="small" style="margin-top:8px">Valori per 100 g</div>
       <div class="row">
         <div><label class="small">kcal</label><input type="number" id="dbKcal"></div>
@@ -455,6 +465,10 @@ async function searchFoods(q) {
       const res = await fetch(url);
       const json = await res.json();
       searchHits = (json.products || []).filter(p => p.product_name && p.nutriments && p.nutriments['energy-kcal_100g']);
+      const avg = averageProducts(searchHits);
+      if (avg.count) {
+        html += `<div class="search-item" id="avgHit"><div class="name">Media di ${avg.count}: ${escapeHtml(q)}</div><div class="meta">${avg.kcal} kcal • P ${avg.prot ?? 0}g • C ${avg.carb ?? 0}g • G ${avg.fat ?? 0}g /100g</div></div>`;
+      }
       html += searchHits.map((p, i) => `
         <div class="search-item" data-i="${i}">
           <div class="name">${escapeHtml(p.product_name || 'Senza nome')}</div>
@@ -466,6 +480,11 @@ async function searchFoods(q) {
     }
   }
   div.innerHTML = html || '<div class="search-item small">Nessun risultato</div>';
+  const avgEl = document.getElementById('avgHit');
+  if (avgEl) avgEl.addEventListener('click', () => {
+    const avg = averageProducts(searchHits);
+    selectFood({ product_name: q, brands: 'Media', nutriments: { 'energy-kcal_100g': avg.kcal, proteins_100g: avg.prot || 0, carbohydrates_100g: avg.carb || 0, fat_100g: avg.fat || 0 } });
+  });
   div.querySelectorAll('[data-i]').forEach(el => {
     el.addEventListener('click', () => selectFood(searchHits[+el.dataset.i]));
   });
@@ -613,457 +632,130 @@ function idbClear() {
     tx.onerror = () => reject(tx.error);
   }));
 }
-function compressImage(file) {
-  return new Promise((resolve) => {
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      const max = 1200;
-      let w = img.width, h = img.height;
-      const scale = Math.min(1, max / Math.max(w, h));
-      w = Math.round(w * scale);
-      h = Math.round(h * scale);
-      const c = document.createElement('canvas');
-      c.width = w;
-      c.height = h;
-      c.getContext('2d').drawImage(img, 0, 0, w, h);
-      URL.revokeObjectURL(url);
-      c.toBlob(b => resolve(b || file), 'image/jpeg', 0.72);
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
-    img.src = url;
-  });
-}
+const lookupFields = {
+  custom: { barcode: 'customBarcode', name: 'customName', kcal: 'customKcal', prot: 'customProt', carb: 'customCarb', fat: 'customFat', status: 'customLookup' },
+  db: { barcode: 'dbBarcode', name: 'dbName', kcal: 'dbKcal', prot: 'dbProt', carb: 'dbCarb', fat: 'dbFat', status: 'dbLookup' }
+};
+let scanTarget = 'db';
+let html5Qr = null;
 
-let ocrWorker = null;
-let ocrStatusEl = null;
-let ocrAttempt = '';
-
-function loadLabelCanvas(file) {
+function loadScript(src) {
   return new Promise((resolve, reject) => {
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      let w = img.naturalWidth || img.width;
-      let h = img.naturalHeight || img.height;
-      const long = Math.max(w, h);
-      const scale = long > 1800 ? 1800 / long : (long < 1200 ? Math.min(2, 1200 / long) : 1);
-      w = Math.max(1, Math.round(w * scale));
-      h = Math.max(1, Math.round(h * scale));
-      const c = document.createElement('canvas');
-      c.width = w;
-      c.height = h;
-      c.getContext('2d').drawImage(img, 0, 0, w, h);
-      URL.revokeObjectURL(url);
-      resolve(c);
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('formato')); };
-    img.src = url;
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('script'));
+    document.head.appendChild(s);
   });
 }
-function canvasBlob(canvas) {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(b => b ? resolve(b) : reject(new Error('foto')), 'image/png');
-  });
+function cleanCode(s) {
+  const m = String(s || '').match(/\d{8,14}/);
+  return m ? m[0] : '';
 }
-function cleanTableCanvas(src) {
-  const c = copyCanvas(src);
-  const ctx = c.getContext('2d', { willReadFrequently: true });
-  const img = ctx.getImageData(0, 0, c.width, c.height);
-  const w = c.width;
-  const h = c.height;
-  const d = img.data;
-  const darkAt = (x, y) => {
-    const i = (y * w + x) * 4;
-    return d[i] + d[i + 1] + d[i + 2] < 420;
+function setLookupStatus(prefix, text) {
+  const el = document.getElementById(lookupFields[prefix].status);
+  if (el) el.textContent = text;
+}
+function fillLookup(prefix, nut, name) {
+  const f = lookupFields[prefix];
+  if (name) document.getElementById(f.name).value = name;
+  if (nut.kcal != null) document.getElementById(f.kcal).value = nut.kcal;
+  if (nut.prot != null) document.getElementById(f.prot).value = nut.prot;
+  if (nut.carb != null) document.getElementById(f.carb).value = nut.carb;
+  if (nut.fat != null) document.getElementById(f.fat).value = nut.fat;
+}
+function nutrientsOf(p) {
+  const n = (p && p.nutriments) || {};
+  const num = k => {
+    const v = n[k];
+    return v == null || v === '' || Number.isNaN(+v) ? null : +v;
   };
-  for (let y = 0; y < h; y++) {
-    let n = 0;
-    const step = 2;
-    for (let x = 0; x < w; x += step) if (darkAt(x, y)) n++;
-    if (n > (w / step) * 0.65) {
-      for (let x = 0; x < w; x++) {
-        const i = (y * w + x) * 4;
-        d[i] = d[i + 1] = d[i + 2] = 255;
-      }
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  return c;
+  return {
+    kcal: num('energy-kcal_100g'),
+    prot: num('proteins_100g'),
+    carb: num('carbohydrates_100g'),
+    fat: num('fat_100g')
+  };
 }
-function inkCanvas(src) {
-  const c = copyCanvas(src);
-  const ctx = c.getContext('2d', { willReadFrequently: true });
-  const img = ctx.getImageData(0, 0, c.width, c.height);
-  const d = img.data;
-  for (let i = 0; i < d.length; i += 4) {
-    const r = d[i];
-    const g = d[i + 1];
-    const b = d[i + 2];
-    const orange = r > 150 && r > g + 25 && g > b + 10;
-    const white = r > 185 && g > 185 && b > 175;
-    const green = g > r + 12 && g > b + 12 && g < 220;
-    const dark = Math.min(r, g, b) < 150;
-    const v = !orange && !white && (green || dark) ? 0 : 255;
-    d[i] = d[i + 1] = d[i + 2] = v;
-  }
-  ctx.putImageData(img, 0, 0);
-  return c;
+function averageProducts(products) {
+  const rows = products.map(nutrientsOf).filter(n => n.kcal != null);
+  const mean = key => {
+    const vals = rows.map(r => r[key]).filter(v => v != null && v >= 0);
+    if (!vals.length) return null;
+    const m = vals.reduce((a, b) => a + b, 0) / vals.length;
+    return key === 'kcal' ? Math.round(m) : Math.round(m * 10) / 10;
+  };
+  return { kcal: mean('kcal'), prot: mean('prot'), carb: mean('carb'), fat: mean('fat'), count: rows.length };
 }
-function copyCanvas(src) {
-  const c = document.createElement('canvas');
-  c.width = src.width;
-  c.height = src.height;
-  c.getContext('2d').drawImage(src, 0, 0);
-  return c;
+async function searchProducts(q) {
+  const url = `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=20&fields=code,product_name,brands,nutriments`;
+  const res = await fetch(url);
+  const json = await res.json();
+  return (json.products || []).filter(p => p.nutriments && p.nutriments['energy-kcal_100g'] != null);
 }
-function stretchCanvas(src) {
-  const c = copyCanvas(src);
-  const ctx = c.getContext('2d', { willReadFrequently: true });
-  const img = ctx.getImageData(0, 0, c.width, c.height);
-  const d = img.data;
-  const gray = new Uint8Array(d.length / 4);
-  for (let i = 0, p = 0; i < d.length; i += 4, p++) gray[p] = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) | 0;
-  const sorted = Array.from(gray).sort((a, b) => a - b);
-  const lo = sorted[Math.floor(sorted.length * 0.05)];
-  const hi = sorted[Math.floor(sorted.length * 0.95)] || 255;
-  const span = Math.max(20, hi - lo);
-  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
-    let y = (gray[p] - lo) * 255 / span;
-    if (y < 0) y = 0;
-    if (y > 255) y = 255;
-    d[i] = d[i + 1] = d[i + 2] = y;
-  }
-  ctx.putImageData(img, 0, 0);
-  return c;
-}
-function binaryCanvas(src) {
-  const c = copyCanvas(src);
-  const ctx = c.getContext('2d', { willReadFrequently: true });
-  const img = ctx.getImageData(0, 0, c.width, c.height);
-  const w = c.width;
-  const h = c.height;
-  const d = img.data;
-  const gray = new Uint8Array(w * h);
-  for (let i = 0, p = 0; i < d.length; i += 4, p++) gray[p] = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) | 0;
-  const ii = new Float64Array((w + 1) * (h + 1));
-  for (let y = 1; y <= h; y++) {
-    let row = 0;
-    for (let x = 1; x <= w; x++) {
-      row += gray[(y - 1) * w + (x - 1)];
-      ii[y * (w + 1) + x] = ii[(y - 1) * (w + 1) + x] + row;
-    }
-  }
-  const r = Math.max(12, Math.round(Math.min(w, h) / 40));
-  for (let y = 0; y < h; y++) {
-    const y1 = Math.max(0, y - r);
-    const y2 = Math.min(h - 1, y + r);
-    for (let x = 0; x < w; x++) {
-      const x1 = Math.max(0, x - r);
-      const x2 = Math.min(w - 1, x + r);
-      const area = (x2 - x1 + 1) * (y2 - y1 + 1);
-      const sum = ii[(y2 + 1) * (w + 1) + (x2 + 1)] - ii[y1 * (w + 1) + (x2 + 1)] - ii[(y2 + 1) * (w + 1) + x1] + ii[y1 * (w + 1) + x1];
-      const v = gray[y * w + x] < sum / area - 10 ? 0 : 255;
-      const i = (y * w + x) * 4;
-      d[i] = d[i + 1] = d[i + 2] = v;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  return c;
-}
-
-function nutritionScore(p) {
-  return ['kcal', 'prot', 'carb', 'fat'].reduce((n, k) => n + (p && p[k] != null ? 1 : 0), 0);
-}
-function mergeNutrition(base, extra) {
-  const out = Object.assign({}, base || {});
-  ['kcal', 'prot', 'carb', 'fat'].forEach(k => {
-    if (!extra || extra[k] == null) return;
-    if (out[k] == null || (out[k] === 0 && extra[k] > 0)) out[k] = extra[k];
-  });
-  return out;
-}
-function nutritionNum(s) {
-  return parseFloat(String(s).replace(',', '.'));
-}
-function fixDigits(text) {
-  return String(text || '').replace(/[oO]/g, '0').replace(/[lI|]/g, '1');
-}
-function firstAmount(text) {
-  const t = fixDigits(text);
-  const m = t.match(/(\d+)\s*[.,]\s*(\d+)/);
-  if (m) return Math.round(parseFloat(m[1] + '.' + m[2]) * 10) / 10;
-  const i = t.match(/(\d+)/);
-  return i ? parseFloat(i[1]) : null;
-}
-function energyToKcal(text) {
-  const t = fixDigits(text);
-  const kcal = [...t.matchAll(/(\d+[.,]\d+|\d+)\s*k\s*c\s*a\s*[l1i]/gi)];
-  if (kcal.length) return Math.round(nutritionNum(kcal[kcal.length - 1][1]));
-  const hasKj = /k\s*j/i.test(t);
-  const hasEnergy = /energ/i.test(t);
-  if (!hasKj && !hasEnergy) return null;
-  const nums = [...t.matchAll(/(\d+[.,]\d+|\d+)/g)].map(m => nutritionNum(m[1]));
-  if (hasKj && nums.length >= 2) return Math.round(nums[nums.length - 1]);
-  if (hasKj && nums.length === 1) return Math.round(nums[0] / 4.184);
-  if (hasEnergy && nums.length >= 2) return Math.round(nums[nums.length - 1]);
-  if (hasEnergy && nums.length === 1) return Math.round(nums[0]);
-  return null;
-}
-function foldLabel(s) {
-  return String(s || '').toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/0/g, 'o').replace(/1/g, 'i').replace(/5/g, 's').replace(/6/g, 'g').replace(/8/g, 'b')
-    .replace(/[^a-z\s]/g, ' ');
-}
-function labelKind(label) {
-  const l = foldLabel(label);
-  if (/di cui/.test(l) && /satur|zuccher|zucker/.test(l)) return 'skip';
-  if (/satur/.test(l) && !/^\s*grass/.test(l)) return 'skip';
-  if (/zuccher|zucker/.test(l) && !/^\s*carb/.test(l)) return 'skip';
-  if (/\bfibr/.test(l) || /\bsale\b|\bsalt\b/.test(l)) return 'skip';
-  if (/energ|kcal|kca|chilocal|\bkj\b/.test(l)) return 'kcal';
-  if (/^\s*(grass|fat)\b/.test(l) || (/grass|\bfat\b/.test(l) && !/di cui/.test(l))) return 'fat';
-  if (/carb/.test(l) && !/di cui/.test(l)) return 'carb';
-  if (/prot/.test(l) && !/di cui/.test(l)) return 'prot';
-  return '';
-}
-function assignNutrient(out, label, valueText) {
-  const kind = labelKind(label);
-  if (kind === 'kcal') {
-    const k = energyToKcal(valueText || label);
-    if (k != null) out.kcal = k;
-  } else if (kind === 'fat' || kind === 'carb' || kind === 'prot') {
-    const n = firstAmount(valueText);
-    if (n != null) out[kind] = n;
-  }
-}
-function parseNutrition(text) {
-  const raw = String(text || '').replace(/\u00a0/g, ' ');
-  const lines = raw.split(/\n/).map(l => l.trim()).filter(Boolean);
-  const out = {};
-  for (const line of lines) assignNutrient(out, line, line);
-  return out;
-}
-function amountsInOrder(text) {
-  const t = fixDigits(text);
-  const out = [];
-  const re = /(\d+)\s*[.,]\s*(\d+)|(\d+)/g;
-  let m;
-  while ((m = re.exec(t))) {
-    out.push(m[1] != null ? Math.round(parseFloat(m[1] + '.' + m[2]) * 10) / 10 : parseFloat(m[3]));
-  }
-  return out;
-}
-function zipLabelsAndNumbers(labelText, numberText) {
-  const labels = String(labelText || '').split(/\n/).map(s => s.trim()).filter(s => labelKind(s));
-  const values = amountsInOrder(numberText);
-  const out = {};
-  if (labels.length >= 3 && labels.length === values.length) {
-    labels.forEach((label, i) => assignNutrient(out, label, String(values[i])));
-    return out;
-  }
-  const lines = String(labelText || '').split(/\n/).map(s => s.trim()).filter(Boolean);
-  if (lines.length >= 3 && lines.length === values.length) {
-    lines.forEach((label, i) => assignNutrient(out, label, String(values[i])));
-  }
-  return out;
-}
-function cropCanvas(src, x0, x1, scale) {
-  const sx = Math.max(0, Math.round(src.width * x0));
-  const sw = Math.max(1, Math.round(src.width * x1) - sx);
-  const c = document.createElement('canvas');
-  c.width = Math.max(1, Math.round(sw * scale));
-  c.height = Math.max(1, Math.round(src.height * scale));
-  const ctx = c.getContext('2d');
-  ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(src, sx, 0, sw, src.height, 0, 0, c.width, c.height);
-  return c;
-}
-function wordBox(w) {
-  const b = w.bbox || w;
-  return { x0: b.x0 || 0, y0: b.y0 || 0, x1: b.x1 || 0, y1: b.y1 || 0, text: w.text || '' };
-}
-function clusterRows(words) {
-  const items = words.map(wordBox).filter(w => w.text.trim());
-  if (!items.length) return [];
-  const heights = items.map(w => Math.max(8, w.y1 - w.y0)).sort((a, b) => a - b);
-  const tol = heights[Math.floor(heights.length / 2)] * 0.7;
-  const rows = [];
-  items.sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
-  for (const w of items) {
-    const cy = (w.y0 + w.y1) / 2;
-    let row = null;
-    for (const r of rows) if (Math.abs(r.cy - cy) <= tol) row = r;
-    if (!row) {
-      row = { cy, words: [] };
-      rows.push(row);
-    }
-    row.words.push(w);
-    row.cy = row.words.reduce((s, x) => s + (x.y0 + x.y1) / 2, 0) / row.words.length;
-  }
-  rows.sort((a, b) => a.cy - b.cy);
-  rows.forEach(r => r.words.sort((a, b) => a.x0 - b.x0));
-  return rows;
-}
-function parseNutritionWords(words) {
-  const rows = clusterRows(words || []);
-  if (!rows.length) return {};
-  const maxX = Math.max(...rows.flatMap(r => r.words.map(w => w.x1)));
-  const mid = maxX * 0.58;
-  const out = {};
-  for (const row of rows) {
-    const left = row.words.filter(w => (w.x0 + w.x1) / 2 < mid);
-    const right = row.words.filter(w => (w.x0 + w.x1) / 2 >= mid);
-    const label = (left.length ? left : row.words).map(w => w.text).join(' ');
-    const value = (right.length ? right : []).map(w => w.text).join(' ');
-    assignNutrient(out, label, value || label);
-  }
-  return out;
-}
-function parseColumnZip(words) {
-  const items = (words || []).map(wordBox).filter(w => w.text.trim());
-  if (items.length < 4) return {};
-  const maxX = Math.max(...items.map(w => w.x1));
-  const mid = maxX * 0.5;
-  const left = clusterRows(items.filter(w => (w.x0 + w.x1) / 2 < mid).map(w => ({ text: w.text, bbox: w })));
-  const right = clusterRows(items.filter(w => (w.x0 + w.x1) / 2 >= mid).map(w => ({ text: w.text, bbox: w })));
-  const labels = left.map(r => r.words.map(w => w.text).join(' ')).filter(t => labelKind(t));
-  const values = right.map(r => r.words.map(w => w.text).join(' ')).filter(t => firstAmount(t) != null || /kcal|kj/i.test(t));
-  const out = {};
-  if (labels.length && labels.length === values.length) {
-    labels.forEach((label, i) => assignNutrient(out, label, values[i]));
-  }
-  return out;
-}
-function bestNutrition(text, words) {
-  const parts = [parseNutritionWords(words), parseColumnZip(words), parseNutrition(text)];
-  return parts.sort((a, b) => nutritionScore(b) - nutritionScore(a))
-    .reduce((best, cur) => mergeNutrition(best, cur), {});
-}
-
-function setOcrStatus(text) {
-  if (ocrStatusEl) ocrStatusEl.textContent = text;
-}
-
-async function getOcr() {
-  if (ocrWorker) return ocrWorker;
-  if (!window.Tesseract) throw new Error('lettore');
-  setOcrStatus('Scarico il lettore, solo la prima volta...');
-  ocrWorker = await Tesseract.createWorker('ita', 1, {
-    workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js',
-    corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1/tesseract-core-lstm.wasm.js',
-    langPath: 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/ita@1.0.0/4.0.0_best_int',
-    logger(m) {
-      const prefix = ocrAttempt ? ocrAttempt + ' · ' : '';
-      if (m.status === 'recognizing text') setOcrStatus(prefix + 'Lettura ' + Math.round((m.progress || 0) * 100) + '%');
-      else if (String(m.status || '').includes('language')) setOcrStatus('Scarico la lingua italiana...');
-      else if (m.status) setOcrStatus(prefix + 'Preparo la lettura...');
-    }
-  });
-  await ocrWorker.setParameters({ tessedit_pageseg_mode: '6' });
-  return ocrWorker;
-}
-
-function applyNutrition(parsed, ids) {
-  let n = 0;
-  if (parsed.kcal != null) { document.getElementById(ids.kcal).value = parsed.kcal; n++; }
-  if (parsed.prot != null) { document.getElementById(ids.prot).value = parsed.prot; n++; }
-  if (parsed.carb != null) { document.getElementById(ids.carb).value = parsed.carb; n++; }
-  if (parsed.fat != null) { document.getElementById(ids.fat).value = parsed.fat; n++; }
-  return n;
-}
-
-function nutritionStatus(parsed) {
-  const bits = [];
-  if (parsed.kcal != null) bits.push(parsed.kcal + ' kcal');
-  if (parsed.prot != null) bits.push('P ' + parsed.prot);
-  if (parsed.carb != null) bits.push('C ' + parsed.carb);
-  if (parsed.fat != null) bits.push('G ' + parsed.fat);
-  if (bits.length >= 3 && parsed.kcal == null) return 'Letti: ' + bits.join(', ') + '. Nella foto non c’è la riga energia.';
-  if (bits.length >= 3) return 'Letti: ' + bits.join(', ') + '. Controlla.';
-  if (bits.length) return 'Lettura incompleta (' + bits.join(', ') + '). Avvicina solo la tabella.';
-  return 'Non ho letto i numeri. Inquadra solo la tabella, dritta.';
-}
-
-async function recognizeText(worker, image) {
-  const res = await worker.recognize(image);
-  return (res.data && res.data.text) || '';
-}
-async function readSplitLabel(worker, canvas) {
-  const tables = [cleanTableCanvas(canvas), binaryCanvas(cleanTableCanvas(canvas))];
-  let parsed = {};
-  for (const table of tables) {
-    if (nutritionScore(parsed) >= 3) break;
-    await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '' });
-    const left = await recognizeText(worker, await canvasBlob(cropCanvas(table, 0, 0.72, 1.6)));
-    await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '0123456789,.' });
-    let numbers = '';
-    try {
-      numbers = await recognizeText(worker, await canvasBlob(cropCanvas(table, 0.52, 1, 2)));
-    } finally {
-      await worker.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '6' });
-    }
-    parsed = preferNutrition(zipLabelsAndNumbers(left, numbers), parsed);
-  }
-  return parsed;
-}
-function preferNutrition(primary, extra) {
-  const out = Object.assign({}, extra || {});
-  ['kcal', 'prot', 'carb', 'fat'].forEach(k => {
-    if (primary && primary[k] != null) out[k] = primary[k];
-  });
-  return out;
-}
-
-async function fillFromLabel(file, ids) {
-  ocrStatusEl = document.getElementById(ids.status);
-  if (!file) return;
-  setOcrStatus('Preparo la foto...');
+async function lookupAverage(prefix) {
+  const name = document.getElementById(lookupFields[prefix].name).value.trim();
+  if (name.length < 2) { setLookupStatus(prefix, 'Scrivi almeno 2 lettere.'); return; }
+  setLookupStatus(prefix, 'Cerco la media...');
   try {
-    const base = await loadLabelCanvas(file);
-    const worker = await getOcr();
-    await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '' });
-    ocrAttempt = 'Foto intera';
-    const ink = cleanTableCanvas(inkCanvas(base));
-    let res = await worker.recognize(await canvasBlob(ink));
-    let data = res.data || {};
-    let parsed = bestNutrition(data.text, data.words || []);
-    if (nutritionScore(parsed) < 3) {
-      ocrAttempt = 'Originale';
-      res = await worker.recognize(await canvasBlob(base));
-      data = res.data || {};
-      const alt = bestNutrition(data.text, data.words || []);
-      parsed = nutritionScore(alt) > nutritionScore(parsed) ? preferNutrition(alt, parsed) : preferNutrition(parsed, alt);
-    }
-    ocrAttempt = '';
-    const n = applyNutrition(parsed, ids);
-    setOcrStatus(n ? nutritionStatus(parsed) : 'Non ho letto i numeri. Riprova, anche più da vicino.');
+    const products = await searchProducts(name);
+    const avg = averageProducts(products);
+    if (!avg.count) { setLookupStatus(prefix, 'Niente in rete. Scrivi i valori a mano.'); return; }
+    fillLookup(prefix, avg);
+    setLookupStatus(prefix, `Media di ${avg.count} prodotti. Controlla, poi salva.`);
   } catch (e) {
-    ocrWorker = null;
-    ocrAttempt = '';
-    const msg = e && e.message === 'formato'
-      ? 'Questa foto non si legge. Rifalla dalla fotocamera.'
-      : 'Lettura non riuscita. Serve internet la prima volta, poi riprova.';
-    setOcrStatus(msg);
+    setLookupStatus(prefix, 'Ricerca non riuscita. Scrivi i valori a mano.');
   }
 }
-document.getElementById('labelPhoto').addEventListener('change', () => {
-  const file = document.getElementById('labelPhoto').files[0];
-  const img = document.getElementById('labelPreview');
-  if (!file) { img.classList.add('hidden'); return; }
-  img.src = URL.createObjectURL(file);
-  img.classList.remove('hidden');
-  fillFromLabel(file, { status: 'labelOcr', kcal: 'customKcal', prot: 'customProt', carb: 'customCarb', fat: 'customFat' });
-});
-document.getElementById('dbPhoto').addEventListener('change', () => {
-  const file = document.getElementById('dbPhoto').files[0];
-  const img = document.getElementById('dbPreview');
-  if (!file) { img.classList.add('hidden'); return; }
-  img.src = URL.createObjectURL(file);
-  img.classList.remove('hidden');
-  fillFromLabel(file, { status: 'dbOcr', kcal: 'dbKcal', prot: 'dbProt', carb: 'dbCarb', fat: 'dbFat' });
-});
+async function lookupBarcode(prefix, code) {
+  const raw = code || document.getElementById(lookupFields[prefix].barcode).value;
+  const barcode = cleanCode(raw);
+  if (!barcode) { setLookupStatus(prefix, 'Codice non valido.'); return; }
+  document.getElementById(lookupFields[prefix].barcode).value = barcode;
+  setLookupStatus(prefix, 'Cerco il prodotto...');
+  try {
+    const res = await fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}.json?fields=product_name,brands,nutriments`);
+    const json = await res.json();
+    const nut = nutrientsOf(json.product);
+    if (!json.product || nut.kcal == null) { setLookupStatus(prefix, 'Prodotto non trovato. Scrivi i valori a mano.'); return; }
+    if (nut.kcal != null) nut.kcal = Math.round(nut.kcal);
+    ['prot', 'carb', 'fat'].forEach(k => { if (nut[k] != null) nut[k] = Math.round(nut[k] * 10) / 10; });
+    fillLookup(prefix, nut, json.product.product_name || '');
+    setLookupStatus(prefix, 'Prodotto trovato. Controlla, poi salva.');
+  } catch (e) {
+    setLookupStatus(prefix, 'Ricerca non riuscita. Scrivi i valori a mano.');
+  }
+}
+async function stopBarcodeScan() {
+  document.getElementById('scanOverlay').classList.add('hidden');
+  if (!html5Qr) return;
+  try { await html5Qr.stop(); } catch (e) {}
+  html5Qr = null;
+}
+async function scanBarcode(prefix) {
+  scanTarget = prefix;
+  const overlay = document.getElementById('scanOverlay');
+  overlay.classList.remove('hidden');
+  setLookupStatus(prefix, 'Inquadra il codice.');
+  try {
+    if (!window.Html5Qrcode) await loadScript('https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js');
+    html5Qr = new Html5Qrcode('barcodeCam');
+    await html5Qr.start(
+      { facingMode: 'environment' },
+      { fps: 8, qrbox: { width: 250, height: 140 } },
+      async (text) => {
+        const code = cleanCode(text);
+        await stopBarcodeScan();
+        if (code) lookupBarcode(scanTarget, code);
+        else setLookupStatus(scanTarget, 'Codice non letto. Scrivilo a mano.');
+      },
+      () => {}
+    );
+  } catch (e) {
+    await stopBarcodeScan();
+    setLookupStatus(prefix, 'Fotocamera non disponibile. Scrivi il codice.');
+  }
+}
 
 async function saveCustomFood(addToday) {
   const name = document.getElementById('customName').value.trim();
@@ -1073,14 +765,8 @@ async function saveCustomFood(addToday) {
   const carb100 = +document.getElementById('customCarb').value || 0;
   const fat100 = +document.getElementById('customFat').value || 0;
   const grams = +document.getElementById('customGrams').value || 0;
-  const file = document.getElementById('labelPhoto').files[0];
   const id = Date.now();
-  let photoId = null;
-  if (file) {
-    photoId = 'p' + id;
-    await idbPut(photoId, await compressImage(file));
-  }
-  data.customFoods.push({ id, name, kcal100, prot100, carb100, fat100, photoId });
+  data.customFoods.push({ id, name, kcal100, prot100, carb100, fat100, photoId: null });
   if (addToday && grams) {
     const factor = grams / 100;
     data.foods.push({
@@ -1171,25 +857,17 @@ function setDbTab(tab) {
 async function saveDbFood() {
   const name = document.getElementById('dbName').value.trim();
   if (!name) return alert('Inserisci il nome');
-  const id = Date.now();
-  let photoId = null;
-  const file = document.getElementById('dbPhoto').files[0];
-  if (file) {
-    photoId = 'p' + id;
-    await idbPut(photoId, await compressImage(file));
-  }
   data.customFoods.push({
-    id,
+    id: Date.now(),
     name,
     kcal100: +document.getElementById('dbKcal').value || 0,
     prot100: +document.getElementById('dbProt').value || 0,
     carb100: +document.getElementById('dbCarb').value || 0,
     fat100: +document.getElementById('dbFat').value || 0,
-    photoId
+    photoId: null
   });
-  ['dbName','dbKcal','dbProt','dbCarb','dbFat'].forEach(k => { document.getElementById(k).value = ''; });
-  document.getElementById('dbPhoto').value = '';
-  document.getElementById('dbPreview').classList.add('hidden');
+  ['dbName','dbBarcode','dbKcal','dbProt','dbCarb','dbFat'].forEach(k => { document.getElementById(k).value = ''; });
+  document.getElementById('dbLookup').textContent = '';
   save();
   renderDatabase();
 }
