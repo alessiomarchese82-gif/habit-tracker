@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Habit Tracker</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 <style>
 :root {
   --bg: #111; --card: #1e1e1e; --text: #f5f5f5; --muted: #999;
@@ -636,47 +636,128 @@ function compressImage(file) {
 }
 
 let ocrWorker = null;
+let ocrStatusEl = null;
+
+function prepareLabelImage(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const max = 1800;
+      let w = img.naturalWidth || img.width;
+      let h = img.naturalHeight || img.height;
+      const fit = Math.min(1, max / Math.max(w, h));
+      const up = Math.max(w, h) < 900 ? Math.min(2, 900 / Math.max(w, h)) : 1;
+      w = Math.max(1, Math.round(w * fit * up));
+      h = Math.max(1, Math.round(h * fit * up));
+      const c = document.createElement('canvas');
+      c.width = w;
+      c.height = h;
+      const ctx = c.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0, w, h);
+      const id = ctx.getImageData(0, 0, w, h);
+      const d = id.data;
+      for (let i = 0; i < d.length; i += 4) {
+        let y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        y = (y - 140) * 1.8 + 140;
+        if (y < 0) y = 0;
+        if (y > 255) y = 255;
+        d[i] = d[i + 1] = d[i + 2] = y;
+      }
+      ctx.putImageData(id, 0, 0);
+      URL.revokeObjectURL(url);
+      c.toBlob(b => b ? resolve(b) : reject(new Error('foto')), 'image/png');
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('formato')); };
+    img.src = url;
+  });
+}
+
 function parseNutrition(text) {
-  const t = String(text || '').replace(/\u00a0/g, ' ');
+  const raw = String(text || '').replace(/\u00a0/g, ' ');
+  const lines = raw.split(/\n/).map(l => l.trim()).filter(Boolean);
   const num = s => parseFloat(String(s).replace(',', '.'));
   const out = {};
-  const kcal = t.match(/(\d+[.,]?\d*)\s*kcal/i);
+  const kcal = /(\d+[.,]\d+|\d+)\s*k\s*c\s*a\s*[l1|i]/i.exec(raw);
   if (kcal) out.kcal = Math.round(num(kcal[1]));
   else {
-    const kj = t.match(/(\d+[.,]?\d*)\s*kj/i);
+    const kj = /(\d+[.,]\d+|\d+)\s*k\s*j/i.exec(raw);
     if (kj) out.kcal = Math.round(num(kj[1]) / 4.184);
   }
-  const grab = re => {
-    const m = t.match(re);
-    return m ? Math.round(num(m[1]) * 10) / 10 : null;
+  const fromLines = (tests, reject) => {
+    for (const line of lines) {
+      const l = line.toLowerCase();
+      if (!tests.some(t => t.test(l))) continue;
+      if (reject && reject(l)) continue;
+      const m = line.match(/(\d+[.,]\d+|\d+)/);
+      if (m) return Math.round(num(m[1]) * 10) / 10;
+    }
+    return null;
   };
-  out.prot = grab(/proteine?\s*[:\-]?\s*(\d+[.,]?\d*)/i);
-  out.carb = grab(/carboidrati\s*[:\-]?\s*(\d+[.,]?\d*)/i);
-  out.fat = grab(/grassi\s*[:\-]?\s*(\d+[.,]?\d*)/i);
+  out.fat = fromLines([/\bgrassi\b/, /\bfat\b/], l => /satur|di cui/.test(l));
+  out.carb = fromLines([/carboidrat/, /carbohyd/], l => /zuccher|di cui/.test(l));
+  out.prot = fromLines([/protein/], l => /di cui/.test(l));
   return out;
 }
+
+function setOcrStatus(text) {
+  if (ocrStatusEl) ocrStatusEl.textContent = text;
+}
+
+async function getOcr() {
+  if (ocrWorker) return ocrWorker;
+  if (!window.Tesseract) throw new Error('lettore');
+  setOcrStatus('Scarico il lettore, solo la prima volta...');
+  ocrWorker = await Tesseract.createWorker('ita', 1, {
+    workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js',
+    corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1/tesseract-core-lstm.wasm.js',
+    langPath: 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/ita@1.0.0/4.0.0_best_int',
+    logger(m) {
+      if (m.status === 'recognizing text') setOcrStatus('Lettura ' + Math.round((m.progress || 0) * 100) + '%');
+      else if (String(m.status || '').includes('language')) setOcrStatus('Scarico la lingua italiana...');
+      else if (m.status) setOcrStatus('Preparo la lettura...');
+    }
+  });
+  await ocrWorker.setParameters({ tessedit_pageseg_mode: '6' });
+  return ocrWorker;
+}
+
+function applyNutrition(parsed, ids) {
+  let n = 0;
+  if (parsed.kcal != null) { document.getElementById(ids.kcal).value = parsed.kcal; n++; }
+  if (parsed.prot != null) { document.getElementById(ids.prot).value = parsed.prot; n++; }
+  if (parsed.carb != null) { document.getElementById(ids.carb).value = parsed.carb; n++; }
+  if (parsed.fat != null) { document.getElementById(ids.fat).value = parsed.fat; n++; }
+  return n;
+}
+
 async function fillFromLabel(file, ids) {
-  const status = document.getElementById(ids.status);
-  if (!file || !window.Tesseract) {
-    if (status) status.textContent = 'Lettura non disponibile. Inserisci i valori a mano.';
-    return;
-  }
-  status.textContent = 'Leggo l\'etichetta...';
+  ocrStatusEl = document.getElementById(ids.status);
+  if (!file) return;
+  setOcrStatus('Leggo l\'etichetta...');
   try {
-    if (!ocrWorker) ocrWorker = await Tesseract.createWorker('ita');
-    const blob = await compressImage(file);
-    const res = await ocrWorker.recognize(blob);
-    const parsed = parseNutrition(res.data && res.data.text);
-    let n = 0;
-    if (parsed.kcal != null) { document.getElementById(ids.kcal).value = parsed.kcal; n++; }
-    if (parsed.prot != null) { document.getElementById(ids.prot).value = parsed.prot; n++; }
-    if (parsed.carb != null) { document.getElementById(ids.carb).value = parsed.carb; n++; }
-    if (parsed.fat != null) { document.getElementById(ids.fat).value = parsed.fat; n++; }
-    status.textContent = n
+    const image = await prepareLabelImage(file);
+    const worker = await getOcr();
+    let res = await worker.recognize(image);
+    let parsed = parseNutrition(res.data && res.data.text);
+    let n = applyNutrition(parsed, ids);
+    if (!n) {
+      setOcrStatus('Riprovo con un\'altra lettura...');
+      await worker.setParameters({ tessedit_pageseg_mode: '4' });
+      res = await worker.recognize(image);
+      await worker.setParameters({ tessedit_pageseg_mode: '6' });
+      parsed = parseNutrition(res.data && res.data.text);
+      n = applyNutrition(parsed, ids);
+    }
+    setOcrStatus(n
       ? 'Valori letti. Controlla prima di salvare.'
-      : 'Non ho letto i numeri. Avvicina la tabella nutrizionale e riprova, oppure compilali a mano.';
+      : 'Non ho letto i numeri. Inquadra solo la tabella, con luce, e riprova.');
   } catch (e) {
-    status.textContent = 'Lettura non riuscita. Compila i campi a mano.';
+    ocrWorker = null;
+    const msg = e && e.message === 'formato'
+      ? 'Questa foto non si legge. Rifalla dalla fotocamera, non dalla libreria.'
+      : 'Lettura non riuscita. Serve internet la prima volta, poi riprova.';
+    setOcrStatus(msg);
   }
 }
 document.getElementById('labelPhoto').addEventListener('change', () => {
