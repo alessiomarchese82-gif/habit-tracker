@@ -14,6 +14,10 @@
   --border: #333; --input: #2a2a2a;
 }
 * { box-sizing: border-box; }
+#scanOverlay { position: fixed; inset: 0; z-index: 80; background: #000; padding: 12px; }
+#scanOverlay:not(.hidden) { display: flex; flex-direction: column; }
+#barcodeCam { width: 100%; min-height: 280px; flex: 1; overflow: hidden; }
+#barcodeCam video { width: 100% !important; height: 100% !important; object-fit: cover; }
 body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px)); }
 .topbar { position: sticky; top: 0; z-index: 20; background: #000; padding-top: env(safe-area-inset-top, 0px); }
 header { background: #000; padding: 10px 16px 6px; display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
@@ -202,7 +206,7 @@ button.secondary { background: #333; }
       <label class="small">Codice a barre</label>
       <input id="customBarcode" inputmode="numeric" placeholder="es. 8076800195057">
       <button class="secondary" type="button" onclick="lookupBarcode('custom')">Cerca codice</button>
-      <button class="secondary" type="button" onclick="scanBarcode('custom')">Fotografa i numeri</button>
+      <button class="secondary" type="button" onclick="scanBarcode('custom')">Scansiona</button>
       <label class="small">Nome</label>
       <input id="customName" placeholder="es. Yogurt greco">
       <button class="secondary" type="button" onclick="lookupAverage('custom')">Media da internet</button>
@@ -238,7 +242,11 @@ button.secondary { background: #333; }
   </div>
 </div>
 
-<input type="file" id="barcodePhoto" accept="image/*" capture="environment" class="hidden">
+<div id="scanOverlay" class="hidden">
+  <p class="small">Avvicina il codice, riempi lo schermo, tieni fermo.</p>
+  <div id="barcodeCam"></div>
+  <button class="secondary" type="button" onclick="stopBarcodeScan()">Chiudi fotocamera</button>
+</div>
 <div id="database" class="section hidden">
   <div class="mode-switch">
     <button type="button" class="primary" id="dbTabCibi" onclick="setDbTab('cibi')">Cibi</button>
@@ -251,7 +259,7 @@ button.secondary { background: #333; }
       <label class="small">Codice a barre</label>
       <input id="dbBarcode" inputmode="numeric" placeholder="es. 8076800195057">
       <button class="secondary" type="button" onclick="lookupBarcode('db')">Cerca codice</button>
-      <button class="secondary" type="button" onclick="scanBarcode('db')">Fotografa i numeri</button>
+      <button class="secondary" type="button" onclick="scanBarcode('db')">Scansiona</button>
       <label class="small">Nome</label>
       <input id="dbName" placeholder="es. Riso, carote, ragù">
       <button class="secondary" type="button" onclick="lookupAverage('db')">Media da internet</button>
@@ -708,113 +716,51 @@ async function lookupBarcode(prefix, code) {
     setLookupStatus(prefix, 'Ricerca non riuscita. Scrivi i valori a mano.');
   }
 }
-let digitWorker = null;
+let scanTarget = 'db';
+let html5Qr = null;
+let scanBusy = false;
 
-function bestDigits(text) {
-  const raw = String(text || '');
-  const groups = raw.match(/\d[\d \u00a0.\-]{5,30}\d/g) || [];
-  const nums = groups.map(s => s.replace(/\D/g, '')).filter(s => s.length >= 8 && s.length <= 14);
-  const all = raw.replace(/\D/g, '');
-  if (all.length >= 8 && all.length <= 14) nums.unshift(all);
-  return nums.find(s => s.length === 13) || nums.find(s => s.length === 8) || nums.find(s => s.length === 12) || nums[0] || '';
+async function stopBarcodeScan() {
+  scanBusy = true;
+  const overlay = document.getElementById('scanOverlay');
+  if (overlay) overlay.classList.add('hidden');
+  if (!html5Qr) return;
+  try { await html5Qr.stop(); } catch (e) {}
+  try { html5Qr.clear(); } catch (e) {}
+  html5Qr = null;
 }
-function canvasBlob(canvas) {
-  return new Promise((resolve, reject) => canvas.toBlob(b => b ? resolve(b) : reject(new Error('foto')), 'image/png'));
-}
-function loadImageCanvas(file) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      let w = img.naturalWidth || img.width;
-      let h = img.naturalHeight || img.height;
-      const long = Math.max(w, h);
-      const scale = long > 1600 ? 1600 / long : (long < 900 ? Math.min(2, 900 / long) : 1);
-      w = Math.max(1, Math.round(w * scale));
-      h = Math.max(1, Math.round(h * scale));
-      const c = document.createElement('canvas');
-      c.width = w;
-      c.height = h;
-      const ctx = c.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(img, 0, 0, w, h);
-      const frame = ctx.getImageData(0, 0, w, h);
-      const d = frame.data;
-      for (let i = 0; i < d.length; i += 4) {
-        let y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-        y = (y - 128) * 1.6 + 128;
-        if (y < 0) y = 0;
-        if (y > 255) y = 255;
-        d[i] = d[i + 1] = d[i + 2] = y;
-      }
-      ctx.putImageData(frame, 0, 0);
-      URL.revokeObjectURL(url);
-      resolve(c);
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('foto')); };
-    img.src = url;
-  });
-}
-function cropBottom(src) {
-  const y = Math.floor(src.height * 0.58);
-  const c = document.createElement('canvas');
-  c.width = src.width;
-  c.height = Math.max(1, src.height - y);
-  c.getContext('2d').drawImage(src, 0, y, src.width, c.height, 0, 0, c.width, c.height);
-  return c;
-}
-async function getDigitReader() {
-  if (digitWorker) return digitWorker;
-  if (!window.Tesseract) await loadScript('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js');
-  digitWorker = await Tesseract.createWorker('eng', 1, {
-    workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js',
-    corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1/tesseract-core-lstm.wasm.js',
-    langPath: 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng@1.0.0/4.0.0_best_int'
-  });
-  await digitWorker.setParameters({
-    tessedit_char_whitelist: '0123456789',
-    tessedit_pageseg_mode: '7'
-  });
-  return digitWorker;
-}
-async function readDigits(worker, canvas) {
-  const res = await worker.recognize(await canvasBlob(canvas));
-  return bestDigits(res.data && res.data.text);
-}
-function scanBarcode(prefix) {
+async function scanBarcode(prefix) {
   scanTarget = prefix;
-  setLookupStatus(prefix, 'Fotografa solo i numeri sotto le sbarre, da vicino.');
-  const input = document.getElementById('barcodePhoto');
-  input.value = '';
-  input.click();
-}
-async function onBarcodePhoto(file) {
-  const prefix = scanTarget || 'db';
-  if (!file) return;
-  setLookupStatus(prefix, 'Leggo i numeri...');
+  scanBusy = false;
+  document.getElementById('scanOverlay').classList.remove('hidden');
+  document.getElementById('barcodeCam').innerHTML = '';
+  setLookupStatus(prefix, 'Avvio fotocamera...');
   try {
-    const canvas = await loadImageCanvas(file);
-    const worker = await getDigitReader();
-    let code = await readDigits(worker, canvas);
-    if (!code) code = await readDigits(worker, cropBottom(canvas));
-    if (!code) {
-      await worker.setParameters({ tessedit_pageseg_mode: '6' });
-      code = await readDigits(worker, canvas);
-      await worker.setParameters({ tessedit_pageseg_mode: '7' });
-    }
-    if (!code) {
-      setLookupStatus(prefix, 'Numeri non letti. Avvicina solo la riga di cifre, oppure scrivila.');
-      return;
-    }
-    lookupBarcode(prefix, code);
+    if (!window.Html5Qrcode) await loadScript('https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js');
+    const F = Html5QrcodeSupportedFormats;
+    html5Qr = new Html5Qrcode('barcodeCam', {
+      formatsToSupport: [F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.CODE_128],
+      experimentalFeatures: { useBarCodeDetectorIfSupported: true }
+    });
+    await html5Qr.start(
+      { facingMode: 'environment' },
+      { fps: 10 },
+      (text) => {
+        if (scanBusy) return;
+        const code = cleanCode(text);
+        if (!code) return;
+        scanBusy = true;
+        const target = scanTarget;
+        stopBarcodeScan().then(() => lookupBarcode(target, code));
+      },
+      () => {}
+    );
+    setLookupStatus(prefix, 'Avvicina il codice e tienilo fermo.');
   } catch (e) {
-    digitWorker = null;
-    setLookupStatus(prefix, 'Lettura non riuscita. Scrivi i numeri a mano.');
+    stopBarcodeScan();
+    setLookupStatus(prefix, 'Fotocamera non disponibile. Scrivi il codice.');
   }
 }
-document.getElementById('barcodePhoto').addEventListener('change', () => {
-  const file = document.getElementById('barcodePhoto').files[0];
-  if (file) onBarcodePhoto(file);
-});
 
 async function saveCustomFood(addToday) {
   const name = document.getElementById('customName').value.trim();
