@@ -16,8 +16,7 @@
 * { box-sizing: border-box; }
 #scanOverlay { position: fixed; inset: 0; z-index: 80; background: #000; padding: 12px; }
 #scanOverlay:not(.hidden) { display: flex; flex-direction: column; }
-#barcodeCam { width: 100%; min-height: 280px; flex: 1; overflow: hidden; }
-#barcodeCam video { width: 100% !important; height: 100% !important; object-fit: cover; }
+#barcodeVideo { width: 100%; min-height: 280px; flex: 1; object-fit: cover; background: #111; }
 body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px)); }
 .topbar { position: sticky; top: 0; z-index: 20; background: #000; padding-top: env(safe-area-inset-top, 0px); }
 header { background: #000; padding: 10px 16px 6px; display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
@@ -244,7 +243,7 @@ button.secondary { background: #333; }
 
 <div id="scanOverlay" class="hidden">
   <p class="small">Avvicina il codice, riempi lo schermo, tieni fermo.</p>
-  <div id="barcodeCam"></div>
+  <video id="barcodeVideo" playsinline webkit-playsinline muted autoplay></video>
   <button class="secondary" type="button" onclick="stopBarcodeScan()">Chiudi fotocamera</button>
 </div>
 <div id="database" class="section hidden">
@@ -717,48 +716,127 @@ async function lookupBarcode(prefix, code) {
   }
 }
 let scanTarget = 'db';
-let html5Qr = null;
 let scanBusy = false;
+let scanTimer = null;
+let scanCanvas = null;
+let codeReader = null;
 
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector('script[src="' + src + '"]')) { resolve(); return; }
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('script'));
+    document.head.appendChild(s);
+  });
+}
 async function stopBarcodeScan() {
   scanBusy = true;
+  if (scanTimer) clearTimeout(scanTimer);
+  scanTimer = null;
   const overlay = document.getElementById('scanOverlay');
   if (overlay) overlay.classList.add('hidden');
-  if (!html5Qr) return;
-  try { await html5Qr.stop(); } catch (e) {}
-  try { html5Qr.clear(); } catch (e) {}
-  html5Qr = null;
+  const video = document.getElementById('barcodeVideo');
+  const stream = video && video.srcObject;
+  if (stream) stream.getTracks().forEach(track => track.stop());
+  if (video) video.srcObject = null;
+  codeReader = null;
+}
+async function openCamera() {
+  const video = document.getElementById('barcodeVideo');
+  video.muted = true;
+  video.playsInline = true;
+  const tries = [
+    { audio: false, video: { facingMode: { ideal: 'environment' } } },
+    { audio: false, video: true }
+  ];
+  let last;
+  for (const constraints of tries) {
+    try {
+      video.srcObject = await navigator.mediaDevices.getUserMedia(constraints);
+      try { await video.play(); } catch (e) {}
+      return video;
+    } catch (e) { last = e; }
+  }
+  throw last || new Error('camera');
+}
+async function scanFrame() {
+  if (scanBusy) return;
+  const video = document.getElementById('barcodeVideo');
+  if (!video || video.readyState < 2 || !video.videoWidth) {
+    scanTimer = setTimeout(scanFrame, 200);
+    return;
+  }
+  try {
+    if (window.barcodeDetector) {
+      const codes = await window.barcodeDetector.detect(video);
+      const hit = (codes || []).map(c => cleanCode(c.rawValue)).find(Boolean);
+      if (hit) {
+        const target = scanTarget;
+        await stopBarcodeScan();
+        lookupBarcode(target, hit);
+        return;
+      }
+    } else if (codeReader) {
+      if (!scanCanvas) scanCanvas = document.createElement('canvas');
+      const w = video.videoWidth;
+      const h = video.videoHeight;
+      const cw = Math.floor(w * 0.92);
+      const ch = Math.max(80, Math.floor(h * 0.4));
+      scanCanvas.width = cw;
+      scanCanvas.height = ch;
+      scanCanvas.getContext('2d', { willReadFrequently: true }).drawImage(video, Math.floor((w - cw) / 2), Math.floor((h - ch) / 2), cw, ch, 0, 0, cw, ch);
+      try {
+        const bitmap = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(new ZXing.HTMLCanvasElementLuminanceSource(scanCanvas)));
+        const code = cleanCode(codeReader.decode(bitmap).getText());
+        if (code) {
+          const target = scanTarget;
+          await stopBarcodeScan();
+          lookupBarcode(target, code);
+          return;
+        }
+      } catch (e) {}
+      try { codeReader.reset(); } catch (e) {}
+    }
+  } catch (e) {}
+  scanTimer = setTimeout(scanFrame, 180);
 }
 async function scanBarcode(prefix) {
   scanTarget = prefix;
   scanBusy = false;
   document.getElementById('scanOverlay').classList.remove('hidden');
-  document.getElementById('barcodeCam').innerHTML = '';
   setLookupStatus(prefix, 'Avvio fotocamera...');
   try {
-    if (!window.Html5Qrcode) await loadScript('https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js');
-    const F = Html5QrcodeSupportedFormats;
-    html5Qr = new Html5Qrcode('barcodeCam', {
-      formatsToSupport: [F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.CODE_128],
-      experimentalFeatures: { useBarCodeDetectorIfSupported: true }
-    });
-    await html5Qr.start(
-      { facingMode: 'environment' },
-      { fps: 10 },
-      (text) => {
-        if (scanBusy) return;
-        const code = cleanCode(text);
-        if (!code) return;
-        scanBusy = true;
-        const target = scanTarget;
-        stopBarcodeScan().then(() => lookupBarcode(target, code));
-      },
-      () => {}
-    );
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('no media');
+    await openCamera();
     setLookupStatus(prefix, 'Avvicina il codice e tienilo fermo.');
+    if ('BarcodeDetector' in window) {
+      try {
+        window.barcodeDetector = new BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'] });
+      } catch (e) {
+        window.barcodeDetector = new BarcodeDetector();
+      }
+    } else {
+      window.barcodeDetector = null;
+      if (!window.ZXing) await loadScript('https://cdn.jsdelivr.net/npm/@zxing/library@0.19.1/umd/index.min.js');
+      const hints = new Map();
+      hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+        ZXing.BarcodeFormat.EAN_13,
+        ZXing.BarcodeFormat.EAN_8,
+        ZXing.BarcodeFormat.UPC_A,
+        ZXing.BarcodeFormat.UPC_E,
+        ZXing.BarcodeFormat.CODE_128
+      ]);
+      hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+      codeReader = new ZXing.MultiFormatReader();
+      codeReader.setHints(hints);
+    }
+    scanFrame();
   } catch (e) {
     stopBarcodeScan();
-    setLookupStatus(prefix, 'Fotocamera non disponibile. Scrivi il codice.');
+    const denied = e && (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError');
+    setLookupStatus(prefix, denied ? 'Permesso fotocamera negato. Scrivi il codice.' : 'Fotocamera non disponibile. Scrivi il codice.');
   }
 }
 
